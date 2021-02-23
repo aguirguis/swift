@@ -195,7 +195,9 @@ class Application(object):
         if conf is None:
             conf = {}
         if logger is None:
-            self.logger = get_logger(conf, log_route='proxy-server')
+            self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
+            self.personal_log.write("init in Application class, proxy/server.py \n")
+            self.logger = get_logger(conf, log_route='proxy-server', log_to_console=False)
         else:
             self.logger = logger
         self._error_limiting = {}
@@ -483,6 +485,8 @@ class Application(object):
         :param env: WSGI environment dictionary
         :param start_response: WSGI callable
         """
+        self.personal_log.write("__call__ in Application class, proxy/server.py \n")
+        self.personal_log.flush()
         try:
             req = self.update_request(Request(env))
             return self.handle_request(req)(env, start_response)
