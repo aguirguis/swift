@@ -1704,6 +1704,9 @@ class Controller(object):
         self.trans_id = '-'
         self._allowed_methods = None
         self._private_methods = None
+        self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
+        self.personal_log.write("init in Controller class, proxy/controllers/base.py \n")
+        self.personal_log.flush()
 
     @property
     def allowed_methods(self):
@@ -1902,14 +1905,17 @@ class Controller(object):
                     node, self.server_type,
                     _('Trying to %(method)s %(path)s') %
                     {'method': method, 'path': path})
-    def do_inference(self, req, ring, part, path, headers,
-			query_string='', overrides=None, node_count=None,
-                        node_iterator=None, body=None):
+    def do_inference(self, req, resp, headers, params):
         """
         The idea for this function is to execute inference operation..
-        For now, it has the same signature as make_requests()..will see later what that should be
+        :param req: a request sent by the client
+        :param resp: response got by querying test batch
+        :param headers: a list of dicts, where each dict represents one
+                        backend request that should be made.
         """
-        pass
+        self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(resp.body))
+        self.personal_log.flush()
+
 
     def make_requests(self, req, ring, part, method, path, headers,
                       query_string='', overrides=None, node_count=None,

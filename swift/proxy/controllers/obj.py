@@ -258,6 +258,7 @@ class BaseObjectController(Controller):
         node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
 
         resp = self._get_or_head_response(req, node_iter, partition, policy)
+#        self.personal_log.write("response from GETorHEAD: {}\r\n".format(resp.body))
 
         if ';' in resp.headers.get('content-type', ''):
             resp.content_type = clean_content_type(
@@ -333,7 +334,23 @@ class BaseObjectController(Controller):
             req, len(nodes), container_partition, container_nodes,
             delete_at_container, delete_at_part, delete_at_nodes,
             container_path=container_path)
+        self.personal_log.write("last line before my part\r\n")
         self.personal_log.flush()
+####################################################################################################
+        #First, check if this an ML task
+        params = {key[len("X-Object-Meta-"):]:val for key, val in headers[0].items()
+                   if key.startswith("X-Object-Meta-")}
+        if "Ml-Task" in params.keys():
+            req.acl = container_info['read_acl']
+            policy = POLICIES.get_by_index(policy_index)
+            node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
+            req.method = 'GET'
+            resp = self._get_or_head_response(req, node_iter, partition, policy)
+            if params["Ml-Task"] == "inference":
+                resp = self.do_inference(req, resp, headers, params)
+                self.personal_log.write("inference done\r\n")
+#            return resp
+#####################################################################################################
         return self._post_object(req, obj_ring, partition, headers)
 
     def _backend_requests(self, req, n_outgoing,
@@ -737,14 +754,6 @@ class BaseObjectController(Controller):
         :param headers: system headers to storage nodes
         :return: Response object
         """
-        #First, check if this an ML task
-        params = {key[len("X-Object-Meta-"):]:val for key, val in headers[0].items()
-                   if key.startswith("X-Object-Meta-")}
-#        self.personal_log.write("{}\r\n".format(params))
-        if "Ml-Task" in params.keys():
-            if params["Ml-Task"] == "inference":
-                resp = self.do_inference(req, obj_ring, partition, req.swift_entity_path, headers)
-                self.personal_log.write("inference done\r\n")
         resp = self.make_requests(req, obj_ring, partition,
                                   'POST', req.swift_entity_path, headers)
         self.personal_log.write("Post response: {}\r\n".format(resp))
