@@ -490,6 +490,8 @@ class Application(object):
         try:
             req = self.update_request(Request(env))
             return self.handle_request(req)(env, start_response)
+#            self.personal_log.close()
+#            return res
         except UnicodeError:
             err = HTTPPreconditionFailed(
                 request=req, body='Invalid UTF8 or contains NULL')
@@ -539,6 +541,7 @@ class Application(object):
 
             try:
                 controller, path_parts = self.get_controller(req)
+                self.personal_log.write("controller: {} \r\n path_parts {}\r\n".format(controller, path_parts))
             except APIVersionError:
                 self.logger.increment('errors')
                 return HTTPBadRequest(request=req)
@@ -577,7 +580,6 @@ class Application(object):
                 return HTTPMethodNotAllowed(request=req, headers={
                     'Allow': ', '.join(allowed_methods)})
             handler = getattr(controller, req.method)
-
             old_authorize = None
             if 'swift.authorize' in req.environ:
                 # We call authorize before the handler, always. If authorized,
@@ -601,6 +603,8 @@ class Application(object):
             try:
                 if old_authorize:
                     req.environ.pop('swift.authorize', None)
+                self.personal_log.write("walking in the normal path...return handler(req)\r\n")
+                self.personal_log.flush()
                 return handler(req)
             finally:
                 if old_authorize:

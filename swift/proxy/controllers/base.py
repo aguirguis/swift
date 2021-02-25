@@ -1902,6 +1902,14 @@ class Controller(object):
                     node, self.server_type,
                     _('Trying to %(method)s %(path)s') %
                     {'method': method, 'path': path})
+    def do_inference(self, req, ring, part, path, headers,
+			query_string='', overrides=None, node_count=None,
+                        node_iterator=None, body=None):
+        """
+        The idea for this function is to execute inference operation..
+        For now, it has the same signature as make_requests()..will see later what that should be
+        """
+        pass
 
     def make_requests(self, req, ring, part, method, path, headers,
                       query_string='', overrides=None, node_count=None,

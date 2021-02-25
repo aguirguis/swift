@@ -36,6 +36,7 @@ import time
 import math
 import random
 import sys
+import os
 
 from greenlet import GreenletExit
 from eventlet import GreenPile, sleep
@@ -174,6 +175,10 @@ class BaseObjectController(Controller):
         self.object_name = unquote(object_name)
         validate_internal_obj(
             self.account_name, self.container_name, self.object_name)
+        self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
+        self.personal_log.write("init in BaseObjectController class, proxy/controllers/obj.py \n")
+        self.personal_log.flush()
+
 
     def iter_nodes_local_first(self, ring, partition, policy=None,
                                local_handoffs_first=False):
@@ -291,6 +296,7 @@ class BaseObjectController(Controller):
     @delay_denial
     def POST(self, req):
         """HTTP POST request handler."""
+        self.personal_log.write("post handler in controller/obj.py...\r\n")
         container_info = self.container_info(
             self.account_name, self.container_name, req)
         container_partition, container_nodes, container_path = \
@@ -321,11 +327,13 @@ class BaseObjectController(Controller):
             req.headers['X-Backend-Next-Part-Power'] = next_part_power
         partition, nodes = obj_ring.get_nodes(
             self.account_name, self.container_name, self.object_name)
+#        self.personal_log.write("partition: {} \r\n nodes {} \r\n self.app {} \r\n".format(partition, nodes, self.app))
 
         headers = self._backend_requests(
             req, len(nodes), container_partition, container_nodes,
             delete_at_container, delete_at_part, delete_at_nodes,
             container_path=container_path)
+        self.personal_log.flush()
         return self._post_object(req, obj_ring, partition, headers)
 
     def _backend_requests(self, req, n_outgoing,
@@ -729,8 +737,17 @@ class BaseObjectController(Controller):
         :param headers: system headers to storage nodes
         :return: Response object
         """
+        #First, check if this an ML task
+        params = {key[len("X-Object-Meta-"):]:val for key, val in headers[0].items()
+                   if key.startswith("X-Object-Meta-")}
+#        self.personal_log.write("{}\r\n".format(params))
+        if "Ml-Task" in params.keys():
+            if params["Ml-Task"] == "inference":
+                resp = self.do_inference(req, obj_ring, partition, req.swift_entity_path, headers)
+                self.personal_log.write("inference done\r\n")
         resp = self.make_requests(req, obj_ring, partition,
                                   'POST', req.swift_entity_path, headers)
+        self.personal_log.write("Post response: {}\r\n".format(resp))
         return resp
 
     @public
