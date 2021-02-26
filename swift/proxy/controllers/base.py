@@ -33,6 +33,11 @@ import functools
 import inspect
 import itertools
 import operator
+import pickle			#for ML operations
+import numpy as np
+import torch
+import torchvision
+import torchvision.transforms as transforms
 from copy import deepcopy
 from sys import exc_info
 from swift import gettext_ as _
@@ -73,6 +78,29 @@ DEFAULT_RECHECK_CONTAINER_EXISTENCE = 60  # seconds
 DEFAULT_RECHECK_UPDATING_SHARD_RANGES = 3600  # seconds
 DEFAULT_RECHECK_LISTING_SHARD_RANGES = 600  # seconds
 
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
+
+class Cifarnet(nn.Module):
+    """ Network tested for Cifar10 """
+    def __init__(self):
+        super(Cifarnet, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, 5)
+        self.pool = nn.MaxPool2d(2, 2)
+        self.conv2 = nn.Conv2d(6, 16, 5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 10)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = x.view(-1, 16 * 5 * 5)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
 
 def update_headers(response, headers):
     """
@@ -702,7 +730,7 @@ def clear_info_cache(app, env, account, container=None, shard=None):
     :param  env: the WSGI environment
     :param  account: the account name
     :param  container: the container name if clearing info for containers, or
-              None
+yy              None
     :param  shard: the sharding state if clearing info for container shard
               ranges, or None
     """
@@ -1905,7 +1933,27 @@ class Controller(object):
                     node, self.server_type,
                     _('Trying to %(method)s %(path)s') %
                     {'method': method, 'path': path})
-    def do_inference(self, req, resp, headers, params):
+
+    def _get_model(self, model_str, dataset):
+        """
+        Returns a model of choice from the library, adapted also to the passed dataset
+        :param model_str: the name of the required model
+        :param dataset: the name of the dataset to be used
+        :raises: ValueError
+        :returns: Model object
+        """
+        num_class_dict = {'mnist':10, 'cifar10':10, 'cifar100':100, 'imagenet':1000}
+        if dataset not in num_class_dict.keys():
+            raise ValueError("Provided dataset ({}) is not known!".format(dataset))
+        num_classes = num_class_dict[dataset]
+        if model_str == 'cifarnet':
+            model = Cifarnet()
+        elif model_str == "resnet50":
+            model = torchvision.models.resnet50(num_classes=num_classes)
+        model.eval()
+        return model
+
+    def _do_inference(self, req, resp, headers, params):
         """
         The idea for this function is to execute inference operation..
         :param req: a request sent by the client
@@ -1913,9 +1961,78 @@ class Controller(object):
         :param headers: a list of dicts, where each dict represents one
                         backend request that should be made.
         """
-        self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(resp.body))
+        resp_type = resp.headers['Content-Type']
+        res = resp.body					#dummy placeholder for the result
+        if "text" in resp_type:				#for testing with texts
+            self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(resp.body))
+        elif "octet-stream" in resp_type:		#images need to be extracted (e.g., with cifar10 batches)
+            self.personal_log.write("extracting images from bytes before inference... \r\n")
+            data = pickle.loads(resp.body, encoding='bytes')
+#            self.personal_log.write("Read data successfully! {} \r\n".format(type(data)))
+            imgs = data[b'data']
+            del data
+#            self.personal_log.write("Extracted images check \r\n")
+            #Read the model
+            model = self._get_model(params['Model'], params['Dataset'])
+#            self.personal_log.write("Got model {}, dataset: {} \r\n".format(model,params['Dataset']))
+            if params['Dataset'] == 'cifar10':
+                self.personal_log.write("CIFAR10 branch, len(imgs) is {}\r\n".format(len(imgs)))
+                #specific for CIFAR10 for now!....e.g., shape = 3*32*32
+                #the next two lines mimic the official source code of PyTorch:
+                #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
+                imgs = np.vstack(imgs).reshape(-1, 3, 32, 32)
+                imgs = imgs.transpose((0,2,3,1))
+                self.personal_log.write("imgs shape: {} ".format(imgs.shape))
+                self.personal_log.write("one image shape: {}\r\n".format(imgs[0].shape))
+                #do the necessary transformation
+                transform_test = transforms.Compose([
+                        transforms.ToTensor(),
+                        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                ])
+                try:
+                    imgs = np.array([transform_test(img) for img in imgs])          #see if there is a faster way to do this!
+                except Exception as e:
+                    self.personal_log.write("Exception:.........{}\r\n".format(e))
+                    self.personal_log.flush()
+                self.personal_log.write("Transformation to tensor done: {}\r\n".format(imgs.shape))
+                self.personal_log.flush()
+                testloader = torch.utils.data.DataLoader(imgs, batch_size=10)
+                self.personal_log.write("TestLoader initiated; number of batches: {}\r\n".format(len(testloader)))
+                self.personal_log.flush()
+                res = []
+                for idx,batch in enumerate(testloader):			#note that labels are not included in testloader
+                    if idx == 2:					#TODO: remove this hack later
+                        break						#This is a hack because we do not have enough memory now!
+                    self.personal_log.write("Processing batch number: {}, batch size {}\r\n".format(idx,len(batch)))
+                    self.personal_log.flush()
+                    self.personal_log.write("batch shape: {}\r\n".format(batch.shape))
+                    self.personal_log.flush()
+                    try:
+                        outputs = model(batch)
+                    except Exception as e:
+                        self.personal_log.write("Exception: {}\r\n".format(e))
+                        self.personal_log.flush()
+                    self.personal_log.write("Outputs length {} \r\n".format(len(outputs)))
+                    self.personal_log.flush()
+                    _,predicted = outputs.max(1)
+                    res.extend(predicted.numpy())
+                del imgs
+                del testloader
+                del outputs
+        #convert res (which should be list of numbers) to string to put it in resp
+        self.personal_log.write("Result of inference done: {}\r\n".format(str(res)))
+        self.personal_log.write("Now, change the response type\r\n")
         self.personal_log.flush()
-
+#        self.personal_log.write("current response: \r\n headers {} \r\n body length {}".format(resp.headers,length(resp.body)))
+        self.personal_log.flush()
+        resp.headers['Content-Type'] = 'text'
+        self.personal_log.write("After changing the response type....headers we got: {}\r\n".format(resp.headers))
+        self.personal_log.flush()
+        resp.headers.update({"inf-res":str(res)})
+#        resp.body = str(res)
+        self.personal_log.write("Done inference here...\r\n")
+        self.personal_log.flush()
+        return resp
 
     def make_requests(self, req, ring, part, method, path, headers,
                       query_string='', overrides=None, node_count=None,

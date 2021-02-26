@@ -347,9 +347,9 @@ class BaseObjectController(Controller):
             req.method = 'GET'
             resp = self._get_or_head_response(req, node_iter, partition, policy)
             if params["Ml-Task"] == "inference":
-                resp = self.do_inference(req, resp, headers, params)
+                resp = self._do_inference(req, resp, headers, params)
                 self.personal_log.write("inference done\r\n")
-#            return resp
+            return resp
 #####################################################################################################
         return self._post_object(req, obj_ring, partition, headers)
 
