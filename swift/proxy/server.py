@@ -196,7 +196,7 @@ class Application(object):
             conf = {}
         if logger is None:
             self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
-            self.personal_log.write("init in Application class, proxy/server.py \n")
+#            self.personal_log.write("init in Application class, proxy/server.py \n")
             self.logger = get_logger(conf, log_route='proxy-server', log_to_console=False)
         else:
             self.logger = logger
@@ -485,13 +485,12 @@ class Application(object):
         :param env: WSGI environment dictionary
         :param start_response: WSGI callable
         """
-        self.personal_log.write("__call__ in Application class, proxy/server.py \n")
-        self.personal_log.flush()
+#        self.personal_log.write("__call__ in Application class, proxy/server.py \n")
+#        self.personal_log.flush()
         try:
             req = self.update_request(Request(env))
             return self.handle_request(req)(env, start_response)
 #            self.personal_log.close()
-#            return res
         except UnicodeError:
             err = HTTPPreconditionFailed(
                 request=req, body='Invalid UTF8 or contains NULL')
@@ -541,7 +540,7 @@ class Application(object):
 
             try:
                 controller, path_parts = self.get_controller(req)
-                self.personal_log.write("controller: {} \r\n path_parts {}\r\n".format(controller, path_parts))
+#                self.personal_log.write("controller: {} \r\n path_parts {}\r\n".format(controller, path_parts))
             except APIVersionError:
                 self.logger.increment('errors')
                 return HTTPBadRequest(request=req)
@@ -603,8 +602,8 @@ class Application(object):
             try:
                 if old_authorize:
                     req.environ.pop('swift.authorize', None)
-                self.personal_log.write("walking in the normal path...return handler(req)\r\n")
-                self.personal_log.flush()
+#                self.personal_log.write("walking in the normal path...return handler(req)\r\n")
+#                self.personal_log.flush()
                 return handler(req)
             finally:
                 if old_authorize:

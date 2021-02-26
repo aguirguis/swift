@@ -34,6 +34,7 @@ import inspect
 import itertools
 import operator
 import pickle			#for ML operations
+import gc
 import numpy as np
 import torch
 import torchvision
@@ -1733,8 +1734,8 @@ class Controller(object):
         self._allowed_methods = None
         self._private_methods = None
         self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
-        self.personal_log.write("init in Controller class, proxy/controllers/base.py \n")
-        self.personal_log.flush()
+#        self.personal_log.write("init in Controller class, proxy/controllers/base.py \n")
+#        self.personal_log.flush()
 
     @property
     def allowed_methods(self):
@@ -1966,43 +1967,56 @@ class Controller(object):
         if "text" in resp_type:				#for testing with texts
             self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(resp.body))
         elif "octet-stream" in resp_type:		#images need to be extracted (e.g., with cifar10 batches)
-            self.personal_log.write("extracting images from bytes before inference... \r\n")
+            self.personal_log.write("extracting images from bytes (length: {}) before inference... \r\n".format(len(resp.body)))
             data = pickle.loads(resp.body, encoding='bytes')
 #            self.personal_log.write("Read data successfully! {} \r\n".format(type(data)))
             imgs = data[b'data']
-            del data
+#            del data
+            resp.body = b''
+            gc.collect()
+            self.personal_log.write("length of response body now is: {}\r\n".format(len(resp.body)))
 #            self.personal_log.write("Extracted images check \r\n")
             #Read the model
             model = self._get_model(params['Model'], params['Dataset'])
 #            self.personal_log.write("Got model {}, dataset: {} \r\n".format(model,params['Dataset']))
             if params['Dataset'] == 'cifar10':
                 self.personal_log.write("CIFAR10 branch, len(imgs) is {}\r\n".format(len(imgs)))
+                assert params['Start'] and params['End']
+                start = int(params['Start'])
+                end = int(params['End'])
+                assert start >= 0 and end <= len(imgs)
+                self.personal_log.write("Inference from images [{}:{}] in the test batch".format(start,end))
                 #specific for CIFAR10 for now!....e.g., shape = 3*32*32
                 #the next two lines mimic the official source code of PyTorch:
                 #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
-                imgs = np.vstack(imgs).reshape(-1, 3, 32, 32)
-                imgs = imgs.transpose((0,2,3,1))
+                imgs_r = np.vstack(imgs[start:end]).reshape(-1, 3, 32, 32)
+                del imgs
+                imgs_t = imgs_r.transpose((0,2,3,1))
+                del imgs_r
+                imgs = imgs_t
                 self.personal_log.write("imgs shape: {} ".format(imgs.shape))
                 self.personal_log.write("one image shape: {}\r\n".format(imgs[0].shape))
+                self.personal_log.flush()
                 #do the necessary transformation
                 transform_test = transforms.Compose([
                         transforms.ToTensor(),
                         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
                 ])
                 try:
-                    imgs = np.array([transform_test(img) for img in imgs])          #see if there is a faster way to do this!
+                    imgs_trans = np.array([transform_test(img) for img in imgs])          #see if there is a faster way to do this!
+                    del imgs
                 except Exception as e:
                     self.personal_log.write("Exception:.........{}\r\n".format(e))
                     self.personal_log.flush()
+                imgs = imgs_trans
                 self.personal_log.write("Transformation to tensor done: {}\r\n".format(imgs.shape))
                 self.personal_log.flush()
                 testloader = torch.utils.data.DataLoader(imgs, batch_size=10)
+                del imgs
                 self.personal_log.write("TestLoader initiated; number of batches: {}\r\n".format(len(testloader)))
                 self.personal_log.flush()
                 res = []
                 for idx,batch in enumerate(testloader):			#note that labels are not included in testloader
-                    if idx == 2:					#TODO: remove this hack later
-                        break						#This is a hack because we do not have enough memory now!
                     self.personal_log.write("Processing batch number: {}, batch size {}\r\n".format(idx,len(batch)))
                     self.personal_log.flush()
                     self.personal_log.write("batch shape: {}\r\n".format(batch.shape))
@@ -2016,21 +2030,24 @@ class Controller(object):
                     self.personal_log.flush()
                     _,predicted = outputs.max(1)
                     res.extend(predicted.numpy())
-                del imgs
+                del data
                 del testloader
                 del outputs
+                del model
         #convert res (which should be list of numbers) to string to put it in resp
         self.personal_log.write("Result of inference done: {}\r\n".format(str(res)))
-        self.personal_log.write("Now, change the response type\r\n")
-        self.personal_log.flush()
+#        self.personal_log.write("Now, change the response type\r\n")
+#        self.personal_log.flush()
 #        self.personal_log.write("current response: \r\n headers {} \r\n body length {}".format(resp.headers,length(resp.body)))
-        self.personal_log.flush()
+#        self.personal_log.flush()
         resp.headers['Content-Type'] = 'text'
-        self.personal_log.write("After changing the response type....headers we got: {}\r\n".format(resp.headers))
-        self.personal_log.flush()
+#        self.personal_log.write("After changing the response type....headers we got: {}\r\n".format(resp.headers))
+#        self.personal_log.flush()
         resp.headers.update({"inf-res":str(res)})
-#        resp.body = str(res)
-        self.personal_log.write("Done inference here...\r\n")
+#        resp.body = str(res).encode('utf-8')
+        del res
+        gc.collect()
+        self.personal_log.write("exiting _do_inference...\r\n")
         self.personal_log.flush()
         return resp
 

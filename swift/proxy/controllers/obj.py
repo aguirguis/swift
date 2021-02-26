@@ -176,8 +176,8 @@ class BaseObjectController(Controller):
         validate_internal_obj(
             self.account_name, self.container_name, self.object_name)
         self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
-        self.personal_log.write("init in BaseObjectController class, proxy/controllers/obj.py \n")
-        self.personal_log.flush()
+#        self.personal_log.write("init in BaseObjectController class, proxy/controllers/obj.py \n")
+#        self.personal_log.flush()
 
 
     def iter_nodes_local_first(self, ring, partition, policy=None,
@@ -334,8 +334,8 @@ class BaseObjectController(Controller):
             req, len(nodes), container_partition, container_nodes,
             delete_at_container, delete_at_part, delete_at_nodes,
             container_path=container_path)
-        self.personal_log.write("last line before my part\r\n")
-        self.personal_log.flush()
+#        self.personal_log.write("last line before my part\r\n")
+#        self.personal_log.flush()
 ####################################################################################################
         #First, check if this an ML task
         params = {key[len("X-Object-Meta-"):]:val for key, val in headers[0].items()
@@ -347,8 +347,13 @@ class BaseObjectController(Controller):
             req.method = 'GET'
             resp = self._get_or_head_response(req, node_iter, partition, policy)
             if params["Ml-Task"] == "inference":
-                resp = self._do_inference(req, resp, headers, params)
+                try:
+                    resp = self._do_inference(req, resp, headers, params)
+                except Exception as e:
+                    self.personal_log.write("Exception: {}\r\n".format(e))
                 self.personal_log.write("inference done\r\n")
+                self.personal_log.write("{}\r\n".format("="*100))
+                self.personal_log.flush()
             return resp
 #####################################################################################################
         return self._post_object(req, obj_ring, partition, headers)
