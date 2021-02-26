@@ -351,7 +351,7 @@ class BaseObjectController(Controller):
                     resp = self._do_inference(req, resp, headers, params)
                 except Exception as e:
                     self.personal_log.write("Exception: {}\r\n".format(e))
-                self.personal_log.write("inference done\r\n")
+                self.personal_log.write("inference done...body length {}\r\n".format(len(resp.body)))
                 self.personal_log.write("{}\r\n".format("="*100))
                 self.personal_log.flush()
             return resp

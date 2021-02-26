@@ -1965,20 +1965,16 @@ class Controller(object):
         resp_type = resp.headers['Content-Type']
         res = resp.body					#dummy placeholder for the result
         if "text" in resp_type:				#for testing with texts
-            self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(resp.body))
+            self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(res))
         elif "octet-stream" in resp_type:		#images need to be extracted (e.g., with cifar10 batches)
-            self.personal_log.write("extracting images from bytes (length: {}) before inference... \r\n".format(len(resp.body)))
-            data = pickle.loads(resp.body, encoding='bytes')
-#            self.personal_log.write("Read data successfully! {} \r\n".format(type(data)))
+            self.personal_log.write("extracting images from bytes (length: {}) before inference... \r\n".format(len(res)))
+            data = pickle.loads(res, encoding='bytes')
             imgs = data[b'data']
-#            del data
             resp.body = b''
             gc.collect()
             self.personal_log.write("length of response body now is: {}\r\n".format(len(resp.body)))
-#            self.personal_log.write("Extracted images check \r\n")
             #Read the model
             model = self._get_model(params['Model'], params['Dataset'])
-#            self.personal_log.write("Got model {}, dataset: {} \r\n".format(model,params['Dataset']))
             if params['Dataset'] == 'cifar10':
                 self.personal_log.write("CIFAR10 branch, len(imgs) is {}\r\n".format(len(imgs)))
                 assert params['Start'] and params['End']
@@ -2035,16 +2031,9 @@ class Controller(object):
                 del outputs
                 del model
         #convert res (which should be list of numbers) to string to put it in resp
-        self.personal_log.write("Result of inference done: {}\r\n".format(str(res)))
-#        self.personal_log.write("Now, change the response type\r\n")
-#        self.personal_log.flush()
-#        self.personal_log.write("current response: \r\n headers {} \r\n body length {}".format(resp.headers,length(resp.body)))
-#        self.personal_log.flush()
+        self.personal_log.write("Result of inference done if of length: {}\r\n".format(len(res)))
         resp.headers['Content-Type'] = 'text'
-#        self.personal_log.write("After changing the response type....headers we got: {}\r\n".format(resp.headers))
-#        self.personal_log.flush()
-        resp.headers.update({"inf-res":str(res)})
-#        resp.body = str(res).encode('utf-8')
+        resp.body = str(res).encode('utf-8')
         del res
         gc.collect()
         self.personal_log.write("exiting _do_inference...\r\n")
