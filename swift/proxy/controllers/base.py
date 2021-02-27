@@ -40,6 +40,7 @@ import numpy as np
 import torch
 import torchvision
 import torchvision.transforms as transforms
+from torch.utils.data import Dataset
 from copy import deepcopy
 from sys import exc_info
 from swift import gettext_ as _
@@ -1715,6 +1716,32 @@ class NodeIter(object):
     def __next__(self):
         return self.next()
 
+#Related to ML extensions
+class InMemoryDataset(Dataset):
+    """In memory dataset wrapper."""
+
+    def __init__(self, dataset, transform=None):
+        """
+        Args:
+            dataset (ndarray): array of dataset samples
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+
+        self.dataset = dataset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+        image = self.dataset[idx]
+        if self.transform:
+            image = self.transform(image)
+
+        return image
 
 class Controller(object):
     """Base WSGI controller class for the proxy"""
@@ -2009,35 +2036,20 @@ class Controller(object):
                         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
                 ])
                 self.personal_log.write("7) Memory usage: {}\r\n".format(self.get_mem_usage()))
-                try:
-                    imgs_trans = np.array([transform_test(img) for img in imgs])          #see if there is a faster way to do this!
-                    del imgs
-                except Exception as e:
-                    self.personal_log.write("Exception:.........{}\r\n".format(e))
-                    self.personal_log.flush()
+                imgs = InMemoryDataset(imgs, transform_test)
                 gc.collect()
                 self.personal_log.write("8) Memory usage: {}\r\n".format(self.get_mem_usage()))
-                imgs = imgs_trans
-                self.personal_log.write("Transformation to tensor done: {}\r\n".format(imgs.shape))
+                self.personal_log.write("Transformation to tensor done: {}\r\n".format(len(imgs)))
                 self.personal_log.flush()
                 testloader = torch.utils.data.DataLoader(imgs, batch_size=10)
                 self.personal_log.write("TestLoader initiated; number of batches: {}\r\n".format(len(testloader)))
                 self.personal_log.flush()
                 res = []
                 for idx,batch in enumerate(testloader):			#note that labels are not included in testloader
-#                    self.personal_log.write("Processing batch number: {}, batch size {}\r\n".format(idx,len(batch)))
-#                    self.personal_log.write("batch shape: {}\r\n".format(batch.shape))
-#                    self.personal_log.write("9) Memory usage: {}\r\n".format(psutil.virtual_memory()))
-                    try:
-                        outputs = model(batch)
-                    except Exception as e:
-                        self.personal_log.write("Exception: {}\r\n".format(e))
-                        self.personal_log.flush()
-#                    self.personal_log.write("Outputs length {} \r\n".format(len(outputs)))
+                    outputs = model(batch)
                     _,predicted = outputs.max(1)
                     res.extend(predicted.numpy())
                     del predicted
-#                    self.personal_log.write("10) Memory usage: {}\r\n".format(psutil.virtual_memory()))
                 del model
                 del data
                 del testloader
