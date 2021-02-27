@@ -35,6 +35,7 @@ import itertools
 import operator
 import pickle			#for ML operations
 import gc
+import psutil
 import numpy as np
 import torch
 import torchvision
@@ -1968,12 +1969,16 @@ class Controller(object):
             self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(res))
         elif "octet-stream" in resp_type:		#images need to be extracted (e.g., with cifar10 batches)
             self.personal_log.write("extracting images from bytes (length: {}) before inference... \r\n".format(len(res)))
+            self.personal_log.write("1) Memory usage: {}\r\n".format(self.get_mem_usage()))
             data = pickle.loads(res, encoding='bytes')
+            self.personal_log.write("2) Memory usage: {}\r\n".format(self.get_mem_usage()))
             imgs = data[b'data']
             resp.body = b''
+            self.personal_log.write("3) Memory usage: {}\r\n".format(self.get_mem_usage()))
             gc.collect()
             self.personal_log.write("length of response body now is: {}\r\n".format(len(resp.body)))
             #Read the model
+            self.personal_log.write("4) Memory usage: {}\r\n".format(self.get_mem_usage()))
             model = self._get_model(params['Model'], params['Dataset'])
             if params['Dataset'] == 'cifar10':
                 self.personal_log.write("CIFAR10 branch, len(imgs) is {}\r\n".format(len(imgs)))
@@ -1981,12 +1986,17 @@ class Controller(object):
                 start = int(params['Start'])
                 end = int(params['End'])
                 assert start >= 0 and end <= len(imgs)
-                self.personal_log.write("Inference from images [{}:{}] in the test batch".format(start,end))
+                self.personal_log.write("Inference from images [{}:{}] in the test batch\r\n".format(start,end))
                 #specific for CIFAR10 for now!....e.g., shape = 3*32*32
                 #the next two lines mimic the official source code of PyTorch:
                 #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
-                imgs_r = np.vstack(imgs[start:end]).reshape(-1, 3, 32, 32)
+                self.personal_log.write("5) Memory usage: {}\r\n".format(self.get_mem_usage()))
+                imgs_r = np.vstack(imgs[start:end])
+                self.personal_log.write("Images_r type: {}\r\n".format(type(imgs_r)))
+                imgs_r = imgs_r.reshape(-1, 3, 32, 32)
+                self.personal_log.write("6) Memory usage: {}\r\n".format(self.get_mem_usage()))
                 del imgs
+                gc.collect()
                 imgs_t = imgs_r.transpose((0,2,3,1))
                 del imgs_r
                 imgs = imgs_t
@@ -1998,47 +2008,58 @@ class Controller(object):
                         transforms.ToTensor(),
                         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
                 ])
+                self.personal_log.write("7) Memory usage: {}\r\n".format(self.get_mem_usage()))
                 try:
                     imgs_trans = np.array([transform_test(img) for img in imgs])          #see if there is a faster way to do this!
                     del imgs
                 except Exception as e:
                     self.personal_log.write("Exception:.........{}\r\n".format(e))
                     self.personal_log.flush()
+                gc.collect()
+                self.personal_log.write("8) Memory usage: {}\r\n".format(self.get_mem_usage()))
                 imgs = imgs_trans
                 self.personal_log.write("Transformation to tensor done: {}\r\n".format(imgs.shape))
                 self.personal_log.flush()
                 testloader = torch.utils.data.DataLoader(imgs, batch_size=10)
-                del imgs
                 self.personal_log.write("TestLoader initiated; number of batches: {}\r\n".format(len(testloader)))
                 self.personal_log.flush()
                 res = []
                 for idx,batch in enumerate(testloader):			#note that labels are not included in testloader
-                    self.personal_log.write("Processing batch number: {}, batch size {}\r\n".format(idx,len(batch)))
-                    self.personal_log.flush()
-                    self.personal_log.write("batch shape: {}\r\n".format(batch.shape))
-                    self.personal_log.flush()
+#                    self.personal_log.write("Processing batch number: {}, batch size {}\r\n".format(idx,len(batch)))
+#                    self.personal_log.write("batch shape: {}\r\n".format(batch.shape))
+#                    self.personal_log.write("9) Memory usage: {}\r\n".format(psutil.virtual_memory()))
                     try:
                         outputs = model(batch)
                     except Exception as e:
                         self.personal_log.write("Exception: {}\r\n".format(e))
                         self.personal_log.flush()
-                    self.personal_log.write("Outputs length {} \r\n".format(len(outputs)))
-                    self.personal_log.flush()
+#                    self.personal_log.write("Outputs length {} \r\n".format(len(outputs)))
                     _,predicted = outputs.max(1)
                     res.extend(predicted.numpy())
+                    del predicted
+#                    self.personal_log.write("10) Memory usage: {}\r\n".format(psutil.virtual_memory()))
+                del model
                 del data
                 del testloader
                 del outputs
-                del model
+                del imgs
         #convert res (which should be list of numbers) to string to put it in resp
         self.personal_log.write("Result of inference done if of length: {}\r\n".format(len(res)))
         resp.headers['Content-Type'] = 'text'
         resp.body = str(res).encode('utf-8')
         del res
         gc.collect()
-        self.personal_log.write("exiting _do_inference...\r\n")
+        self.personal_log.write("exiting _do_inference, len of gc.get_objects: {}...\r\n".format(len(gc.get_objects())))
         self.personal_log.flush()
+        self.personal_log.write("11) Memory usage: {}\r\n".format(self.get_mem_usage()))
         return resp
+
+    def get_mem_usage(self):
+        mem_dict = psutil.virtual_memory()
+        all_mem = np.array([v for v in mem_dict])/(1024*1024*1024)	#convert to GB
+        return {"available":all_mem[1],	"used":all_mem[3],
+		"free":all_mem[4], "active":all_mem[5],
+		"buffers":all_mem[7],"cached":all_mem[8]}
 
     def make_requests(self, req, ring, part, method, path, headers,
                       query_string='', overrides=None, node_count=None,
