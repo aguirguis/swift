@@ -35,6 +35,7 @@ import itertools
 import operator
 import pickle			#for ML operations
 import gc
+import resource
 from sys import getrefcount
 import numpy as np
 import torch
@@ -80,7 +81,6 @@ DEFAULT_RECHECK_ACCOUNT_EXISTENCE = 60  # seconds
 DEFAULT_RECHECK_CONTAINER_EXISTENCE = 60  # seconds
 DEFAULT_RECHECK_UPDATING_SHARD_RANGES = 3600  # seconds
 DEFAULT_RECHECK_LISTING_SHARD_RANGES = 600  # seconds
-
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
@@ -1924,6 +1924,7 @@ class Controller(object):
         :param headers: a list of dicts, where each dict represents one
                         backend request that should be made.
         """
+        self.personal_log.write("Available memory: {}\r\n".format(resource.getrlimit(resource.RLIMIT_DATA)))
         resp_type = resp.headers['Content-Type']
         res = resp.body					#dummy placeholder for the result
         if "text" in resp_type:				#for testing with texts
@@ -1976,7 +1977,7 @@ class Controller(object):
                 self.personal_log.write("8) Memory usage after dataset loader: {}\r\n".format(get_mem_usage()))
                 self.personal_log.write("Transformation to tensor done: {}\r\n".format(len(imgs)))
                 self.personal_log.flush()
-                testloader = torch.utils.data.DataLoader(imgs, batch_size=5)
+                testloader = torch.utils.data.DataLoader(imgs, batch_size=100)
                 self.personal_log.write("TestLoader initiated; number of batches: {}\r\n".format(len(testloader)))
                 self.personal_log.flush()
                 res = []

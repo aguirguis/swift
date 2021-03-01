@@ -57,7 +57,7 @@ KILL_WAIT = 15  # seconds to wait for servers to die (by default)
 WARNING_WAIT = 3  # seconds to wait after message that may just be a warning
 
 MAX_DESCRIPTORS = 32768
-MAX_MEMORY = (1024 * 1024 * 1024) * 2  # 2 GB
+MAX_MEMORY = (1024 * 1024 * 1024) * 10  # 2 GB
 MAX_PROCS = 8192  # workers * disks, can get high
 
 
