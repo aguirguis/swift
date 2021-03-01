@@ -35,12 +35,11 @@ import itertools
 import operator
 import pickle			#for ML operations
 import gc
-import psutil
 import numpy as np
 import torch
-import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import Dataset
+from swift.proxy.mllib.dataset_utils import InMemoryDataset
+from swift.proxy.mllib.utils import get_model, get_mem_usage
 from copy import deepcopy
 from sys import exc_info
 from swift import gettext_ as _
@@ -84,26 +83,6 @@ DEFAULT_RECHECK_LISTING_SHARD_RANGES = 600  # seconds
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-
-class Cifarnet(nn.Module):
-    """ Network tested for Cifar10 """
-    def __init__(self):
-        super(Cifarnet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
-
-    def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
 
 def update_headers(response, headers):
     """
@@ -1716,33 +1695,6 @@ class NodeIter(object):
     def __next__(self):
         return self.next()
 
-#Related to ML extensions
-class InMemoryDataset(Dataset):
-    """In memory dataset wrapper."""
-
-    def __init__(self, dataset, transform=None):
-        """
-        Args:
-            dataset (ndarray): array of dataset samples
-            transform (callable, optional): Optional transform to be applied
-                on a sample.
-        """
-
-        self.dataset = dataset
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-        image = self.dataset[idx]
-        if self.transform:
-            image = self.transform(image)
-
-        return image
-
 class Controller(object):
     """Base WSGI controller class for the proxy"""
     server_type = 'Base'
@@ -1963,25 +1915,6 @@ class Controller(object):
                     _('Trying to %(method)s %(path)s') %
                     {'method': method, 'path': path})
 
-    def _get_model(self, model_str, dataset):
-        """
-        Returns a model of choice from the library, adapted also to the passed dataset
-        :param model_str: the name of the required model
-        :param dataset: the name of the dataset to be used
-        :raises: ValueError
-        :returns: Model object
-        """
-        num_class_dict = {'mnist':10, 'cifar10':10, 'cifar100':100, 'imagenet':1000}
-        if dataset not in num_class_dict.keys():
-            raise ValueError("Provided dataset ({}) is not known!".format(dataset))
-        num_classes = num_class_dict[dataset]
-        if model_str == 'cifarnet':
-            model = Cifarnet()
-        elif model_str == "resnet50":
-            model = torchvision.models.resnet50(num_classes=num_classes)
-        model.eval()
-        return model
-
     def _do_inference(self, req, resp, headers, params):
         """
         The idea for this function is to execute inference operation..
@@ -1996,17 +1929,18 @@ class Controller(object):
             self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(res))
         elif "octet-stream" in resp_type:		#images need to be extracted (e.g., with cifar10 batches)
             self.personal_log.write("extracting images from bytes (length: {}) before inference... \r\n".format(len(res)))
-            self.personal_log.write("1) Memory usage: {}\r\n".format(self.get_mem_usage()))
+            self.personal_log.write("1) Memory usage: {}\r\n".format(get_mem_usage()))
             data = pickle.loads(res, encoding='bytes')
-            self.personal_log.write("2) Memory usage: {}\r\n".format(self.get_mem_usage()))
+            self.personal_log.write("2) Memory usage: {}\r\n".format(get_mem_usage()))
             imgs = data[b'data']
             resp.body = b''
-            self.personal_log.write("3) Memory usage: {}\r\n".format(self.get_mem_usage()))
+            self.personal_log.write("3) Memory usage: {}\r\n".format(get_mem_usage()))
             gc.collect()
             self.personal_log.write("length of response body now is: {}\r\n".format(len(resp.body)))
             #Read the model
-            self.personal_log.write("4) Memory usage: {}\r\n".format(self.get_mem_usage()))
-            model = self._get_model(params['Model'], params['Dataset'])
+            self.personal_log.write("4) Memory usage: {}\r\n".format(get_mem_usage()))
+            model = get_model(params['Model'], params['Dataset'])
+            model.eval()
             if params['Dataset'] == 'cifar10':
                 self.personal_log.write("CIFAR10 branch, len(imgs) is {}\r\n".format(len(imgs)))
                 assert params['Start'] and params['End']
@@ -2017,11 +1951,11 @@ class Controller(object):
                 #specific for CIFAR10 for now!....e.g., shape = 3*32*32
                 #the next two lines mimic the official source code of PyTorch:
                 #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
-                self.personal_log.write("5) Memory usage: {}\r\n".format(self.get_mem_usage()))
+                self.personal_log.write("5) Memory usage: {}\r\n".format(get_mem_usage()))
                 imgs_r = np.vstack(imgs[start:end])
                 self.personal_log.write("Images_r type: {}\r\n".format(type(imgs_r)))
                 imgs_r = imgs_r.reshape(-1, 3, 32, 32)
-                self.personal_log.write("6) Memory usage: {}\r\n".format(self.get_mem_usage()))
+                self.personal_log.write("6) Memory usage: {}\r\n".format(get_mem_usage()))
                 del imgs
                 gc.collect()
                 imgs_t = imgs_r.transpose((0,2,3,1))
@@ -2035,10 +1969,10 @@ class Controller(object):
                         transforms.ToTensor(),
                         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
                 ])
-                self.personal_log.write("7) Memory usage: {}\r\n".format(self.get_mem_usage()))
+                self.personal_log.write("7) Memory usage: {}\r\n".format(get_mem_usage()))
                 imgs = InMemoryDataset(imgs, transform_test)
                 gc.collect()
-                self.personal_log.write("8) Memory usage: {}\r\n".format(self.get_mem_usage()))
+                self.personal_log.write("8) Memory usage: {}\r\n".format(get_mem_usage()))
                 self.personal_log.write("Transformation to tensor done: {}\r\n".format(len(imgs)))
                 self.personal_log.flush()
                 testloader = torch.utils.data.DataLoader(imgs, batch_size=10)
@@ -2063,15 +1997,8 @@ class Controller(object):
         gc.collect()
         self.personal_log.write("exiting _do_inference, len of gc.get_objects: {}...\r\n".format(len(gc.get_objects())))
         self.personal_log.flush()
-        self.personal_log.write("11) Memory usage: {}\r\n".format(self.get_mem_usage()))
+        self.personal_log.write("11) Memory usage: {}\r\n".format(get_mem_usage()))
         return resp
-
-    def get_mem_usage(self):
-        mem_dict = psutil.virtual_memory()
-        all_mem = np.array([v for v in mem_dict])/(1024*1024*1024)	#convert to GB
-        return {"available":all_mem[1],	"used":all_mem[3],
-		"free":all_mem[4], "active":all_mem[5],
-		"buffers":all_mem[7],"cached":all_mem[8]}
 
     def make_requests(self, req, ring, part, method, path, headers,
                       query_string='', overrides=None, node_count=None,
