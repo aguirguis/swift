@@ -81,9 +81,6 @@ DEFAULT_RECHECK_ACCOUNT_EXISTENCE = 60  # seconds
 DEFAULT_RECHECK_CONTAINER_EXISTENCE = 60  # seconds
 DEFAULT_RECHECK_UPDATING_SHARD_RANGES = 3600  # seconds
 DEFAULT_RECHECK_LISTING_SHARD_RANGES = 600  # seconds
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
 
 def update_headers(response, headers):
     """
@@ -713,7 +710,7 @@ def clear_info_cache(app, env, account, container=None, shard=None):
     :param  env: the WSGI environment
     :param  account: the account name
     :param  container: the container name if clearing info for containers, or
-yy              None
+              None
     :param  shard: the sharding state if clearing info for container shard
               ranges, or None
     """
@@ -1923,6 +1920,7 @@ class Controller(object):
         :param resp: response got by querying test batch
         :param headers: a list of dicts, where each dict represents one
                         backend request that should be made.
+        :param params: a dict with the parameters of the inference task
         """
         self.personal_log.write("Available memory: {}\r\n".format(resource.getrlimit(resource.RLIMIT_DATA)))
         resp_type = resp.headers['Content-Type']
