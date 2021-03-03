@@ -36,11 +36,11 @@ import operator
 import pickle			#for ML operations
 import gc
 import resource
+from _thread import start_new_thread
 from sys import getrefcount
 import numpy as np
 import torch
-import torchvision.transforms as transforms
-from swift.proxy.mllib.dataset_utils import InMemoryDataset
+from swift.proxy.mllib.dataset_utils import read_cifar
 from swift.proxy.mllib.utils import get_model, get_mem_usage
 from copy import deepcopy
 from sys import exc_info
@@ -1913,6 +1913,9 @@ class Controller(object):
                     _('Trying to %(method)s %(path)s') %
                     {'method': method, 'path': path})
 
+    def thread_test(self, str):
+        self.personal_log.write("String printed from another thread: {}\r\n".format(str))
+
     def _do_inference(self, req, resp, headers, params):
         """
         The idea for this function is to execute inference operation..
@@ -1922,93 +1925,43 @@ class Controller(object):
                         backend request that should be made.
         :param params: a dict with the parameters of the inference task
         """
-        self.personal_log.write("Available memory: {}\r\n".format(resource.getrlimit(resource.RLIMIT_DATA)))
-        resp_type = resp.headers['Content-Type']
-        res = resp.body					#dummy placeholder for the result
-        if "text" in resp_type:				#for testing with texts
-            self.personal_log.write("First line in do_inference resp.body: {} \r\n".format(res))
-        elif "octet-stream" in resp_type:		#images need to be extracted (e.g., with cifar10 batches)
-            self.personal_log.write("extracting images from bytes (length: {}) before inference... \r\n".format(len(res)))
-            self.personal_log.write("1) Memory usage before loading data: {}\r\n".format(get_mem_usage()))
-            data = pickle.loads(res, encoding='bytes')
-            self.personal_log.write("2) Memory usage after loading data: {}\r\n".format(get_mem_usage()))
-            imgs = data[b'data']
+#        start_new_thread(self.thread_test,("hello, world",))
+        dataset = params['Dataset']
+        #init the model
+        model = get_model(params['Model'], dataset)
+        model.eval()
+        if dataset.startswith('cifar'):		#images need to be extracted (e.g., with cifar10 batches)
+            #load dataset
+            dataloader = read_cifar(resp.body,params)
             resp.body = b''
             gc.collect()
-            self.personal_log.write("3) Memory usage after freeing resp body: {}\r\n".format(get_mem_usage()))
-            self.personal_log.write("length of response body now is: {}\r\n".format(len(resp.body)))
-            #Read the model
-            self.personal_log.write("4) Memory usage before loading model: {}\r\n".format(get_mem_usage()))
-            model = get_model(params['Model'], params['Dataset'])
-            model.eval()
-            if params['Dataset'] == 'cifar10':
-                self.personal_log.write("CIFAR10 branch, len(imgs) is {}\r\n".format(len(imgs)))
-                assert params['Start'] and params['End']
-                start = int(params['Start'])
-                end = int(params['End'])
-                assert start >= 0 and end <= len(imgs)
-                self.personal_log.write("Inference from images [{}:{}] in the test batch\r\n".format(start,end))
-                #specific for CIFAR10 for now!....e.g., shape = 3*32*32
-                #the next two lines mimic the official source code of PyTorch:
-                #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
-                self.personal_log.write("5) Memory usage before np.vstack: {}\r\n".format(get_mem_usage()))
-                imgs_r = np.vstack(imgs[start:end])
-                self.personal_log.write("Images_r type: {}\r\n".format(type(imgs_r)))
-                imgs_r = imgs_r.reshape(-1, 3, 32, 32)
-                self.personal_log.write("6) Memory usage after np.vstack: {}\r\n".format(get_mem_usage()))
-                del imgs
-                imgs_t = imgs_r.transpose((0,2,3,1))
-                del imgs_r
-                imgs = imgs_t
-                self.personal_log.write("imgs shape: {} ".format(imgs.shape))
-                self.personal_log.write("one image shape: {}\r\n".format(imgs[0].shape))
-                self.personal_log.flush()
-                #do the necessary transformation
-                transform_test = transforms.Compose([
-                        transforms.ToTensor(),
-                        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-                ])
-                gc.collect()
-                self.personal_log.write("7) Memory usage before creating dataset loader: {}\r\n".format(get_mem_usage()))
-                imgs = InMemoryDataset(imgs, transform_test)
-                gc.collect()
-                self.personal_log.write("8) Memory usage after dataset loader: {}\r\n".format(get_mem_usage()))
-                self.personal_log.write("Transformation to tensor done: {}\r\n".format(len(imgs)))
-                self.personal_log.flush()
-                testloader = torch.utils.data.DataLoader(imgs, batch_size=100)
-                self.personal_log.write("TestLoader initiated; number of batches: {}\r\n".format(len(testloader)))
-                self.personal_log.flush()
-                res = []
-                for idx,batch in enumerate(testloader):			#note that labels are not included in testloader
-                    outputs = model(batch)
-                    _,predicted = outputs.max(1)
-                    res.extend(predicted.numpy())
-                    del predicted
-                self.personal_log.write("8.5) before del memory usage: {}\r\n".format(get_mem_usage()))
-                mem_used = []
-                ref_count = [getrefcount(data),getrefcount(testloader),getrefcount(outputs),getrefcount(imgs),getrefcount(model)]
-                del data
-                mem_used.append(get_mem_usage()['used'])
-                del testloader
-                mem_used.append(get_mem_usage()['used'])
-                del outputs
-                mem_used.append(get_mem_usage()['used'])
-                del imgs
-                mem_used.append(get_mem_usage()['used'])
-                del model
-                gc.collect()
-                mem_used.append(get_mem_usage()['used'])
-                self.personal_log.write("Used memory in different phases: {}\r\n Ref counts: {}\r\n".format(mem_used,ref_count))
-                self.personal_log.write("9) end of inference..memory usage: {}\r\n".format(get_mem_usage()))
+            #inference block
+            res = []
+            for idx,batch in enumerate(dataloader):			#note that labels are not included in testloader
+                outputs = model(batch)
+                predicted = outputs.max(1)
+                res.extend(predicted[1].numpy())
+                del predicted
+            mem_used = []
+            ref_count = [getrefcount(dataloader),getrefcount(outputs),getrefcount(model)]
+            mem_used.append(get_mem_usage()['used'])
+            del outputs
+            mem_used.append(get_mem_usage()['used'])
+            del model
+            mem_used.append(get_mem_usage()['used'])
+            del dataloader
+            mem_used.append(get_mem_usage()['used'])
+            gc.collect()
+            mem_used.append(get_mem_usage()['used'])
+            self.personal_log.write("Used memory in different phases: {}\r\n Ref counts: {}\r\n".format(mem_used,ref_count))
+#           self.personal_log.write("9) end of inference..memory usage: {}\r\n".format(get_mem_usage()))
         #convert res (which should be list of numbers) to string to put it in resp
-        self.personal_log.write("Result of inference done if of length: {}\r\n".format(len(res)))
+        self.personal_log.write("Result of inference done is of length: {}\r\n".format(len(res)))
         resp.headers['Content-Type'] = 'text'
         resp.body = str(res).encode('utf-8')
         del res
         gc.collect()
-        self.personal_log.write("exiting _do_inference, len of gc.get_objects: {}...\r\n".format(len(gc.get_objects())))
-        self.personal_log.flush()
-        self.personal_log.write("11) Final emory usage before exiting: {}\r\n".format(get_mem_usage()))
+        self.personal_log.write("Final emory usage before exiting: {}\r\n".format(get_mem_usage()))
         return resp
 
     def make_requests(self, req, ring, part, method, path, headers,
