@@ -37,7 +37,7 @@ def read_mnist(data_bytes, labels_bytes, params, train=False, logFile=None):
                  transforms.ToTensor(),
                  transforms.Normalize((0.1307, ), (0.3081, ))
     ])
-    dataset = InMemoryDataset(imgs, labels=labels, transform=transform)
+    dataset = InMemoryDataset(imgs, labels=labels, transform=transform, logFile=logFile)
     batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
     assert batch_size > 0 and batch_size <= len(dataset)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
@@ -86,7 +86,7 @@ def read_cifar(data_bytes, params, train=False, logFile=None):
 class InMemoryDataset(Dataset):
     """In memory dataset wrapper."""
 
-    def __init__(self, dataset, labels=None, transform=None):
+    def __init__(self, dataset, labels=None, transform=None, logFile=None):
         """
         Args:
             dataset (ndarray): array of dataset samples
@@ -97,6 +97,7 @@ class InMemoryDataset(Dataset):
         self.dataset = dataset
         self.labels = labels
         self.transform = transform
+        self.logFile = logFile
 
     def __len__(self):
         return len(self.dataset)
@@ -111,7 +112,7 @@ class InMemoryDataset(Dataset):
             image = Image.fromarray(image.numpy(), mode='L')
         if self.transform:
             image = self.transform(image)
-        if self.labels:
+        if self.labels is not None:
             return image, int(self.labels[idx])
         return image
 

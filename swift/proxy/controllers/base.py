@@ -1916,6 +1916,21 @@ class Controller(object):
     def thread_test(self, str):
         self.personal_log.write("String printed from another thread: {}\r\n".format(str))
 
+    def _do_training_iter(self, dataloader, model, optimizer, criterion):
+        """
+        Do one training iteration (using one dataloader)
+        :param dataloader: training data
+        :param model: training model
+        :param optimizer: optimizer to be used
+        :param criterion: loss criterion
+        """
+        for (inputs,targets) in dataloader:
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+
     def _do_training(self, req, resp, headers, params):
         """
         Train a given model using a given dataset, and return the trained model
@@ -1932,26 +1947,38 @@ class Controller(object):
         opt_args={"lr":0.1,"momentum":0.9, "weight_decay":5e-4}
         optimizer = get_optimizer(model, params['Optimizer'],**opt_args)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+###########################################################################################
+        #some common code (partly copied from obj.py)
+        container_info = self.container_info(self.account_name, self.container_name, req)
+        policy_index = req.headers.get('X-Backend-Storage-Policy-Index',
+                     container_info['storage_policy'])
+        obj_ring = self.app.get_object_ring(policy_index)
+        policy = POLICIES.get_by_index(policy_index)
+        (version, account, container, obj) = split_path(req.environ['PATH_INFO'], 4, 4, True)
+        version="/"+version
+###########################################################################################
+        num_epochs = int(params['Num-Epochs'])
+        assert num_epochs > 0
+        object_list = None
         if dataset == 'cifar10':
             #This is how it's done (more or less) in PyTorch source code:
             #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
             train_list = ["data_batch_1","data_batch_2","data_batch_3","data_batch_4","data_batch_5"]
             parent_dir = headers[0]['Parent-Dir']
             object_list = [os.path.join(parent_dir,tfile) for tfile in train_list]
-            num_epochs = int(params['Num-Epochs'])
-            assert num_epochs > 0
-###########################################################################################
-            #some common code (partly copied from obj.py)
-            container_info = self.container_info(
-                     self.account_name, self.container_name, req)
-            policy_index = req.headers.get('X-Backend-Storage-Policy-Index',
-                     container_info['storage_policy'])
-            obj_ring = self.app.get_object_ring(policy_index)
-            policy = POLICIES.get_by_index(policy_index)
-            (version, account, container, obj) = split_path(req.environ['PATH_INFO'], 4, 4, True)
-            version="/"+version
-###########################################################################################
-            for epoch in range(num_epochs):
+        elif dataset == 'mnist':
+            obj_name = 'mnist/train-labels-idx1-ubyte'
+            #first, read the object from the storage layer
+            partition = obj_ring.get_part(account, container, obj_name)
+            node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
+            path = os.path.join(version, account, container, obj_name)
+            req.environ['PATH_INFO'] = path
+            tempresp = self._get_or_head_response(req, node_iter, partition, policy)
+            #IMPORTANT: here we assume the POST method is called on the training file of MNIST
+            #note that...only one dataloader exist for MNIST
+            dataloader = read_mnist(resp.body, tempresp.body, params, train=True, logFile=self.personal_log)
+        for epoch in range(num_epochs):
+            if dataset == 'cifar10':
                 for obj_name in object_list:
                     #first, read the object from the storage layer
                     partition = obj_ring.get_part(account, container, obj_name)
@@ -1959,18 +1986,13 @@ class Controller(object):
                     path = os.path.join(version,self.account_name, self.container_name, obj_name)
                     req.environ['PATH_INFO'] = path
                     tempresp = self._get_or_head_response(req, node_iter, partition, policy)
-                    self.personal_log.write("Object {} of len {} \r\n".format(
-			obj_name,len(tempresp.body)))
                     dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
-                    for idx, (inputs,targets) in enumerate(dataloader):
-                        optimizer.zero_grad()
-                        outputs = model(inputs)
-                        loss = criterion(outputs, targets)
-                        loss.backward()
-                        optimizer.step()
-                scheduler.step()
-            resp.body = pickle.dumps(model.state_dict())
-            return resp
+                    self._do_training_iter(dataloader, model, optimizer, criterion)
+            elif dataset == 'mnist':
+                    self._do_training_iter(dataloader, model, optimizer, criterion)
+            scheduler.step()
+        resp.body = pickle.dumps(model.state_dict())
+        return resp
 
     def _do_inference(self, req, resp, headers, params):
         """
