@@ -40,7 +40,7 @@ from _thread import start_new_thread
 from sys import getrefcount
 import numpy as np
 import torch
-from swift.proxy.mllib.dataset_utils import read_cifar
+from swift.proxy.mllib.dataset_utils import read_cifar, read_mnist
 from swift.proxy.mllib.utils import *
 from copy import deepcopy
 from sys import exc_info
@@ -1986,9 +1986,13 @@ class Controller(object):
         #init the model
         model = get_model(params['Model'], dataset)
         model.eval()
-        if dataset.startswith('cifar'):		#images need to be extracted (e.g., with cifar10 batches)
+        coded_datasets = ['cifar10', 'cifar100', 'mnist']
+        if dataset in coded_datasets:		#images need to be extracted first
             #load dataset
-            dataloader = read_cifar(resp.body,params)
+            if dataset.startswith('cifar'):
+                dataloader = read_cifar(resp.body,params)
+            elif dataset == 'mnist':
+                dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
             resp.body = b''
             gc.collect()
             #inference block
