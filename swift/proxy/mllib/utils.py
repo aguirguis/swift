@@ -2,7 +2,39 @@ import psutil
 import numpy as np
 import torch
 import torchvision
+import torch.nn as nn
+import torch.optim as optim
 from swift.proxy.mllib.models import *
+
+def get_optimizer(model, optimizer, *args, **kwargs):
+    """ Select optimizer to use
+    Args
+    model        the model to optimize
+    optimizer    optimizer name required to be initialized
+    device       device to put model on (cuda or cpu)
+    """
+    optimizers = {'sgd': optim.SGD,
+		'adam': optim.Adam,
+		'adamw':optim.AdamW,
+		'rmsprop': optim.RMSprop,
+		'adagrad': optim.Adagrad}
+    if optimizer in optimizers.keys():
+        return optimizers[optimizer](model.parameters(),  *args, **kwargs)
+    else:
+        print("The selected optimizer is undefined, the available optimizers are: ", optimizers.keys())
+        raise
+
+def get_loss(loss_fn):
+    """ Select loss function to optimize with
+    Args
+    loss_fn        Name of the loss function to optimize against
+    """
+    losses = {'nll': nn.NLLLoss, 'cross-entropy':nn.CrossEntropyLoss}
+    if loss_fn in losses.keys():
+        return losses[loss_fn]()
+    else:
+        print("The selected loss function is undefined, available losses are: ", losses.keys())
+        raise
 
 def get_model(model_str, dataset):
     """

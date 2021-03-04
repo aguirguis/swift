@@ -346,15 +346,22 @@ class BaseObjectController(Controller):
             node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
             req.method = 'GET'
             resp = self._get_or_head_response(req, node_iter, partition, policy)
-            if params["Ml-Task"] == "inference":
+            task = params['Ml-Task']
+            if task == "inference":
                 try:
                     resp = self._do_inference(req, resp, headers, params)
                 except Exception as e:
                     self.personal_log.write("Exception: {}\r\n".format(e))
-                    resp.headers.update({'success':Flase})
-                self.personal_log.write("inference done...body length {}\r\n".format(len(resp.body)))
-                self.personal_log.write("{}\r\n".format("="*100))
-                self.personal_log.flush()
+                    resp.headers.update({'success':False})
+            elif task == "training":
+                try:
+                    resp = self._do_training(req, resp, headers, params)
+                except Exception as e:
+                    self.personal_log.write("Exception: {}\r\n".format(e))
+                    resp.headers.update({'success':False})
+            self.personal_log.write("{} done...body length {}\r\n".format(task,len(resp.body)))
+            self.personal_log.write("{}\r\n".format("="*100))
+            self.personal_log.flush()
             return resp
 #####################################################################################################
         return self._post_object(req, obj_ring, partition, headers)

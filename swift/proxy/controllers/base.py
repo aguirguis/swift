@@ -41,7 +41,7 @@ from sys import getrefcount
 import numpy as np
 import torch
 from swift.proxy.mllib.dataset_utils import read_cifar
-from swift.proxy.mllib.utils import get_model, get_mem_usage
+from swift.proxy.mllib.utils import *
 from copy import deepcopy
 from sys import exc_info
 from swift import gettext_ as _
@@ -1916,6 +1916,62 @@ class Controller(object):
     def thread_test(self, str):
         self.personal_log.write("String printed from another thread: {}\r\n".format(str))
 
+    def _do_training(self, req, resp, headers, params):
+        """
+        Train a given model using a given dataset, and return the trained model
+        :param req: a request sent by the client
+        :param resp: response got by querying test batch
+        :param headers: a list of dicts, where each dict represents one
+                        backend request that should be made.
+        :param params: a dict with the parameters of the inference task
+        """
+        dataset = params['Dataset']
+        model = get_model(params['Model'], dataset)
+        model.train()
+        criterion = get_loss(params['Lossfn'])
+        opt_args={"lr":0.1,"momentum":0.9, "weight_decay":5e-4}
+        optimizer = get_optimizer(model, params['Optimizer'],**opt_args)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+        if dataset == 'cifar10':
+            #This is how it's done (more or less) in PyTorch source code:
+            #https://pytorch.org/vision/0.8/_modules/torchvision/datasets/cifar.html#CIFAR10
+            train_list = ["data_batch_1","data_batch_2","data_batch_3","data_batch_4","data_batch_5"]
+            parent_dir = headers[0]['Parent-Dir']
+            object_list = [os.path.join(parent_dir,tfile) for tfile in train_list]
+            num_epochs = int(params['Num-Epochs'])
+            assert num_epochs > 0
+###########################################################################################
+            #some common code (partly copied from obj.py)
+            container_info = self.container_info(
+                     self.account_name, self.container_name, req)
+            policy_index = req.headers.get('X-Backend-Storage-Policy-Index',
+                     container_info['storage_policy'])
+            obj_ring = self.app.get_object_ring(policy_index)
+            policy = POLICIES.get_by_index(policy_index)
+            (version, account, container, obj) = split_path(req.environ['PATH_INFO'], 4, 4, True)
+            version="/"+version
+###########################################################################################
+            for epoch in range(num_epochs):
+                for obj_name in object_list:
+                    #first, read the object from the storage layer
+                    partition = obj_ring.get_part(account, container, obj_name)
+                    node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
+                    path = os.path.join(version,self.account_name, self.container_name, obj_name)
+                    req.environ['PATH_INFO'] = path
+                    tempresp = self._get_or_head_response(req, node_iter, partition, policy)
+                    self.personal_log.write("Object {} of len {} \r\n".format(
+			obj_name,len(tempresp.body)))
+                    dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
+                    for idx, (inputs,targets) in enumerate(dataloader):
+                        optimizer.zero_grad()
+                        outputs = model(inputs)
+                        loss = criterion(outputs, targets)
+                        loss.backward()
+                        optimizer.step()
+                scheduler.step()
+            resp.body = pickle.dumps(model.state_dict())
+            return resp
+
     def _do_inference(self, req, resp, headers, params):
         """
         The idea for this function is to execute inference operation..
@@ -1957,8 +2013,7 @@ class Controller(object):
 #           self.personal_log.write("9) end of inference..memory usage: {}\r\n".format(get_mem_usage()))
         #convert res (which should be list of numbers) to string to put it in resp
         self.personal_log.write("Result of inference done is of length: {}\r\n".format(len(res)))
-        resp.headers['Content-Type'] = 'text'
-        resp.body = str(res).encode('utf-8')
+        resp.body = pickle.dumps(res)
         del res
         gc.collect()
         self.personal_log.write("Final emory usage before exiting: {}\r\n".format(get_mem_usage()))
