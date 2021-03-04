@@ -5,6 +5,7 @@ import torchvision.transforms as transforms
 from torch.utils.data import Dataset
 from PIL import Image
 import codecs
+from io import BytesIO
 
 SN3_PASCALVINCENT_TYPEMAP = {
     8: (torch.uint8, np.uint8, np.uint8),
@@ -15,9 +16,42 @@ SN3_PASCALVINCENT_TYPEMAP = {
     14: (torch.float64, np.dtype('>f8'), 'f8')
 }
 
+def read_imagenet(data_bytes_arr, labels, params, train=False, logFile=None):
+    """
+    read Imagenet dataset from data_bytes and return the result in the form of dataloader
+    :param data_bytes_arr:      array of images encoded in bytes format
+    :param labels_bytes:        labels in txt format
+    :param params:             	dict of parameters passed to the ML task
+    :param train:              	flag to mark is it the training or the test set
+    :param logFile:             file handle to log whatever in it (for debugging purposes)
+    """
+    images = [np.array(Image.open(BytesIO(data_bytes)).convert('RGB')) for data_bytes in data_bytes_arr]
+    imgs = np.array(images)
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+    if train:
+        transform = transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    else:
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    dataset = InMemoryDataset(imgs, labels=labels, transform=transform)
+    batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
+    assert batch_size > 0 and batch_size <= len(dataset)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
+    return dataloader
+
 def read_mnist(data_bytes, labels_bytes, params, train=False, logFile=None):
     """
-    read cifar (10 or 100) dataset from data_bytes and return the result in the form of dataloader
+    read MNIST dataset from data_bytes and return the result in the form of dataloader
     :param data_bytes:          the data source encoded in bytes format
     :param labels_bytes:	labels in byte format
     :param params:              dict of parameters passed to the ML task

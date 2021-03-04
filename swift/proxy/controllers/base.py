@@ -40,7 +40,7 @@ from _thread import start_new_thread
 from sys import getrefcount
 import numpy as np
 import torch
-from swift.proxy.mllib.dataset_utils import read_cifar, read_mnist
+from swift.proxy.mllib.dataset_utils import read_cifar, read_mnist, read_imagenet
 from swift.proxy.mllib.utils import *
 from copy import deepcopy
 from sys import exc_info
@@ -1916,6 +1916,70 @@ class Controller(object):
     def thread_test(self, str):
         self.personal_log.write("String printed from another thread: {}\r\n".format(str))
 
+    def _get_storage_info(self, req):
+        """
+        helper function: get info about storage to read files easily
+        :param req: the request sent by the client
+        """
+        #some common code (partly copied from obj.py)
+        container_info = self.container_info(self.account_name, self.container_name, req)
+        policy_index = req.headers.get('X-Backend-Storage-Policy-Index',
+                     container_info['storage_policy'])
+        obj_ring = self.app.get_object_ring(policy_index)
+        policy = POLICIES.get_by_index(policy_index)
+        (version, account, container, obj) = split_path(req.environ['PATH_INFO'], 4, 4, True)
+        version="/"+version
+        return (obj_ring,policy,version)
+
+    def _read_from_storage(self, req, obj_name, obj_ring, policy, version):
+        """
+        read the object from the storage layer
+        :param req: request sent by the client
+        :param obj_name: name of the object to read
+        :param obj_ring: ring in which this object lies
+        :param policy: storage policy
+        :param version: authentication version
+        """
+        partition = obj_ring.get_part(self.account_name, self.container_name, obj_name)
+        node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
+        path = os.path.join(version, self.account_name, self.container_name, obj_name)
+        req.environ['PATH_INFO'] = path
+        return self._get_or_head_response(req, node_iter, partition, policy)
+
+    def _read_imagenet(self, req, params, train=False):
+        """
+        read the requested images from disk and return them in a dataloader
+        :param req:      	    request sent by the client
+        :param params:              dict of parameters passed to the ML task
+        :param train:               flag to mark is it the training or the test set
+        """
+        #get start and end of images needed to be inferenced
+        start = int(params['Start']) if 'Start' in params.keys() else 0
+        end = int(params['End']) if 'End' in params.keys() else 50000	#Imagenet set currently has 50K images
+        assert start >= 0 and end <= 50000
+        #get necessary structures to read from the storage layer
+        (obj_ring,policy,version) = self._get_storage_info(req)
+        #read labels from storage
+        labels_file = "imagenet/ILSVRC2012_validation_ground_truth.txt"
+        labels = None
+        if train:
+            resp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
+            labels = resp.body.decode("utf-8").split("\n")
+            labels = [int(l) for l in labels[start:end]]            #no need to take all labels; only those in the requeste>
+            self.personal_log.write("Ground truth: {}\r\n".format(labels))
+            self.personal_log.flush()
+        #Now, read requested data
+        data_bytes_arr = []
+        for idx in range(start, end):
+            idstr = str(idx)
+            obj_name = "imagenet/ILSVRC2012_val_000"+((5-len(idstr))*"0")+idstr+".JPEG"
+            resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
+            if len(resp.body) == 70: 		#TODO: file not found; mask this issue for now...will figure it out later
+                continue
+            data_bytes_arr.append(resp.body)
+        self.personal_log.write("Going to work with {} images \r\n".format(len(data_bytes_arr)))
+        return read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
+
     def _do_training_iter(self, dataloader, model, optimizer, criterion):
         """
         Do one training iteration (using one dataloader)
@@ -1947,16 +2011,7 @@ class Controller(object):
         opt_args={"lr":0.1,"momentum":0.9, "weight_decay":5e-4}
         optimizer = get_optimizer(model, params['Optimizer'],**opt_args)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
-###########################################################################################
-        #some common code (partly copied from obj.py)
-        container_info = self.container_info(self.account_name, self.container_name, req)
-        policy_index = req.headers.get('X-Backend-Storage-Policy-Index',
-                     container_info['storage_policy'])
-        obj_ring = self.app.get_object_ring(policy_index)
-        policy = POLICIES.get_by_index(policy_index)
-        (version, account, container, obj) = split_path(req.environ['PATH_INFO'], 4, 4, True)
-        version="/"+version
-###########################################################################################
+        (obj_ring,policy,version) = self._get_storage_info(req)
         num_epochs = int(params['Num-Epochs'])
         assert num_epochs > 0
         object_list = None
@@ -1969,26 +2024,20 @@ class Controller(object):
         elif dataset == 'mnist':
             obj_name = 'mnist/train-labels-idx1-ubyte'
             #first, read the object from the storage layer
-            partition = obj_ring.get_part(account, container, obj_name)
-            node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
-            path = os.path.join(version, account, container, obj_name)
-            req.environ['PATH_INFO'] = path
-            tempresp = self._get_or_head_response(req, node_iter, partition, policy)
+            tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
             #IMPORTANT: here we assume the POST method is called on the training file of MNIST
             #note that...only one dataloader exist for MNIST
             dataloader = read_mnist(resp.body, tempresp.body, params, train=True, logFile=self.personal_log)
+        elif dataset == 'imagenet':
+            dataloader = self._read_imagenet(req, params, train=True)
         for epoch in range(num_epochs):
             if dataset == 'cifar10':
                 for obj_name in object_list:
                     #first, read the object from the storage layer
-                    partition = obj_ring.get_part(account, container, obj_name)
-                    node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
-                    path = os.path.join(version,self.account_name, self.container_name, obj_name)
-                    req.environ['PATH_INFO'] = path
-                    tempresp = self._get_or_head_response(req, node_iter, partition, policy)
+                    tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
                     dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
                     self._do_training_iter(dataloader, model, optimizer, criterion)
-            elif dataset == 'mnist':
+            else: #dataset == 'mnist':
                     self._do_training_iter(dataloader, model, optimizer, criterion)
             scheduler.step()
         resp.body = pickle.dumps(model.state_dict())
@@ -2008,35 +2057,34 @@ class Controller(object):
         #init the model
         model = get_model(params['Model'], dataset)
         model.eval()
-        coded_datasets = ['cifar10', 'cifar100', 'mnist']
-        if dataset in coded_datasets:		#images need to be extracted first
-            #load dataset
-            if dataset.startswith('cifar'):
-                dataloader = read_cifar(resp.body,params)
-            elif dataset == 'mnist':
-                dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
-            resp.body = b''
-            gc.collect()
-            #inference block
-            res = []
-            for idx,batch in enumerate(dataloader):			#note that labels are not included in testloader
-                outputs = model(batch)
-                predicted = outputs.max(1)
-                res.extend(predicted[1].numpy())
-                del predicted
-            mem_used = []
-            ref_count = [getrefcount(dataloader),getrefcount(outputs),getrefcount(model)]
-            mem_used.append(get_mem_usage()['used'])
-            del outputs
-            mem_used.append(get_mem_usage()['used'])
-            del model
-            mem_used.append(get_mem_usage()['used'])
-            del dataloader
-            mem_used.append(get_mem_usage()['used'])
-            gc.collect()
-            mem_used.append(get_mem_usage()['used'])
-            self.personal_log.write("Used memory in different phases: {}\r\n Ref counts: {}\r\n".format(mem_used,ref_count))
-#           self.personal_log.write("9) end of inference..memory usage: {}\r\n".format(get_mem_usage()))
+        #load dataset
+        if dataset.startswith('cifar'):
+            dataloader = read_cifar(resp.body,params)
+        elif dataset == 'mnist':
+            dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
+        elif dataset == 'imagenet':
+            dataloader = self._read_imagenet(req, params)
+        resp.body = b''
+        gc.collect()
+        #inference block
+        res = []
+        for idx,batch in enumerate(dataloader):			#note that labels are not included in testloader
+            outputs = model(batch)
+            predicted = outputs.max(1)
+            res.extend(predicted[1].numpy())
+            del predicted
+        mem_used = []
+        ref_count = [getrefcount(dataloader),getrefcount(outputs),getrefcount(model)]
+        mem_used.append(get_mem_usage()['used'])
+        del outputs
+        mem_used.append(get_mem_usage()['used'])
+        del model
+        mem_used.append(get_mem_usage()['used'])
+        del dataloader
+        mem_used.append(get_mem_usage()['used'])
+        gc.collect()
+        mem_used.append(get_mem_usage()['used'])
+        self.personal_log.write("Used memory in different phases: {}\r\n Ref counts: {}\r\n".format(mem_used,ref_count))
         #convert res (which should be list of numbers) to string to put it in resp
         self.personal_log.write("Result of inference done is of length: {}\r\n".format(len(res)))
         resp.body = pickle.dumps(res)
