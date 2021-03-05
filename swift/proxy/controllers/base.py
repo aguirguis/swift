@@ -36,7 +36,7 @@ import operator
 import pickle			#for ML operations
 import gc
 import resource
-from _thread import start_new_thread
+import concurrent.futures as futures
 from sys import getrefcount
 import numpy as np
 import torch
@@ -1913,9 +1913,6 @@ class Controller(object):
                     _('Trying to %(method)s %(path)s') %
                     {'method': method, 'path': path})
 
-    def thread_test(self, str):
-        self.personal_log.write("String printed from another thread: {}\r\n".format(str))
-
     def _get_storage_info(self, req):
         """
         helper function: get info about storage to read files easily
@@ -1965,19 +1962,18 @@ class Controller(object):
         if train:
             resp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
             labels = resp.body.decode("utf-8").split("\n")
-            labels = [int(l) for l in labels[start:end]]            #no need to take all labels; only those in the requeste>
-            self.personal_log.write("Ground truth: {}\r\n".format(labels))
-            self.personal_log.flush()
+            #no need to take all labels; only those in the requeste
+            labels = [int(l)-1 for l in labels[start:end]]		#note that original labels are given from 1 to 1000
+#            self.personal_log.write("Ground truth: {}\r\n".format(labels))
+#            self.personal_log.flush()
         #Now, read requested data
         data_bytes_arr = []
         for idx in range(start, end):
-            idstr = str(idx)
+            idstr = str(idx+1)			#files numbering starts from 1 rather than 0
             obj_name = "imagenet/ILSVRC2012_val_000"+((5-len(idstr))*"0")+idstr+".JPEG"
             resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
-            if len(resp.body) == 70: 		#TODO: file not found; mask this issue for now...will figure it out later
-                continue
             data_bytes_arr.append(resp.body)
-        self.personal_log.write("Going to work with {} images \r\n".format(len(data_bytes_arr)))
+        self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(data_bytes_arr),start,end))
         return read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
 
     def _do_training_iter(self, dataloader, model, optimizer, criterion):
@@ -1988,7 +1984,7 @@ class Controller(object):
         :param optimizer: optimizer to be used
         :param criterion: loss criterion
         """
-        for (inputs,targets) in dataloader:
+        for idx,(inputs,targets) in enumerate(dataloader):
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
@@ -2028,8 +2024,6 @@ class Controller(object):
             #IMPORTANT: here we assume the POST method is called on the training file of MNIST
             #note that...only one dataloader exist for MNIST
             dataloader = read_mnist(resp.body, tempresp.body, params, train=True, logFile=self.personal_log)
-        elif dataset == 'imagenet':
-            dataloader = self._read_imagenet(req, params, train=True)
         for epoch in range(num_epochs):
             if dataset == 'cifar10':
                 for obj_name in object_list:
@@ -2037,8 +2031,22 @@ class Controller(object):
                     tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
                     dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
                     self._do_training_iter(dataloader, model, optimizer, criterion)
-            else: #dataset == 'mnist':
+            elif dataset == 'mnist':
                     self._do_training_iter(dataloader, model, optimizer, criterion)
+            elif dataset == 'imagenet':
+                #imagenet is huge....we chunk dataset (which has 50k imgs so far) into batches of 1k images
+                #note in training (as with Cifar10 above), we use the whole dataset per epch
+                #thus, ignore the given params['start'], params['end']
+                step=1000
+                params['Start'],params['End'] = 0,step
+                dataloader = self._read_imagenet(req, params, train=True)
+                exc = futures.ThreadPoolExecutor()
+                for s in range(step,50000,step):
+                    params['Start'],params['End'] = s,s+step
+                    fut = exc.submit(self._read_imagenet, req, params, train=True) #a thread to read next batch while we consume the first batch
+                    self._do_training_iter(dataloader, model, optimizer, criterion)
+                    dataloader = fut.result()
+                self._do_training_iter(dataloader, model, optimizer, criterion)	#the last batch
             scheduler.step()
         resp.body = pickle.dumps(model.state_dict())
         return resp
@@ -2052,7 +2060,6 @@ class Controller(object):
                         backend request that should be made.
         :param params: a dict with the parameters of the inference task
         """
-#        start_new_thread(self.thread_test,("hello, world",))
         dataset = params['Dataset']
         #init the model
         model = get_model(params['Model'], dataset)
