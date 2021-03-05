@@ -1974,6 +1974,7 @@ class Controller(object):
             resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
             data_bytes_arr.append(resp.body)
         self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(data_bytes_arr),start,end))
+        self.personal_log.flush()
         return read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
 
     def _do_training_iter(self, dataloader, model, optimizer, criterion):
@@ -1985,11 +1986,28 @@ class Controller(object):
         :param criterion: loss criterion
         """
         for idx,(inputs,targets) in enumerate(dataloader):
+            self.personal_log.write("training idx: {}\r\n".format(idx))
+            self.personal_log.flush()
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
+
+    def _do_inference_iter(self, dataloader, model, res):
+        """
+        Do one inference iteration (using one dataloader)
+        :param dataloader: training data
+        :param model: training model
+        :param res: a list to hold the result
+        """
+        for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
+            self.personal_log.write("inference idx: {}\r\n".format(idx))
+            self.personal_log.flush()
+            outputs = model(batch)
+            predicted = outputs.max(1)
+            res.extend(predicted[1].numpy())
+            del predicted
 
     def _do_training(self, req, resp, headers, params):
         """
@@ -2051,39 +2069,37 @@ class Controller(object):
         resp.body = pickle.dumps(model.state_dict())
         return resp
 
-    def _do_inference(self, req, resp, headers, params):
+    def _do_inference(self, req, resp, params):
         """
         The idea for this function is to execute inference operation..
         :param req: a request sent by the client
         :param resp: response got by querying test batch
-        :param headers: a list of dicts, where each dict represents one
-                        backend request that should be made.
         :param params: a dict with the parameters of the inference task
         """
         dataset = params['Dataset']
         #init the model
         model = get_model(params['Model'], dataset)
         model.eval()
+        res = []
         #load dataset
         if dataset.startswith('cifar'):
             dataloader = read_cifar(resp.body,params)
+            self._do_inference_iter(dataloader, model, res)
         elif dataset == 'mnist':
             dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
-        elif dataset == 'imagenet':
-            dataloader = self._read_imagenet(req, params)
+            self._do_inference_iter(dataloader, model, res)
+        elif dataset == 'imagenet':	#imagenet is huge....let's do inference step by step
+            start,end = int(params['Start']), int(params['End'])
+            step = 1000
+            for s in range(start, end, step):
+                params['Start'] = s
+                params['End'] = s+step if s+step < end else end
+                dataloader = self._read_imagenet(req, params)
+                self._do_inference_iter(dataloader, model, res)
         resp.body = b''
         gc.collect()
-        #inference block
-        res = []
-        for idx,batch in enumerate(dataloader):			#note that labels are not included in testloader
-            outputs = model(batch)
-            predicted = outputs.max(1)
-            res.extend(predicted[1].numpy())
-            del predicted
         mem_used = []
-        ref_count = [getrefcount(dataloader),getrefcount(outputs),getrefcount(model)]
-        mem_used.append(get_mem_usage()['used'])
-        del outputs
+        ref_count = [getrefcount(dataloader),getrefcount(model)]
         mem_used.append(get_mem_usage()['used'])
         del model
         mem_used.append(get_mem_usage()['used'])

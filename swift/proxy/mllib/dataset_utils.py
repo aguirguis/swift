@@ -25,7 +25,8 @@ def read_imagenet(data_bytes_arr, labels, params, train=False, logFile=None):
     :param train:              	flag to mark is it the training or the test set
     :param logFile:             file handle to log whatever in it (for debugging purposes)
     """
-    assert len(data_bytes_arr) == len(labels)
+    if labels is not None:
+        assert len(data_bytes_arr) == len(labels)
     images = [np.array(Image.open(BytesIO(data_bytes)).convert('RGB')) for data_bytes in data_bytes_arr]
     imgs = np.array(images)
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
