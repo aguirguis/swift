@@ -1964,8 +1964,7 @@ class Controller(object):
             labels = resp.body.decode("utf-8").split("\n")
             #no need to take all labels; only those in the requeste
             labels = [int(l)-1 for l in labels[start:end]]		#note that original labels are given from 1 to 1000
-#            self.personal_log.write("Ground truth: {}\r\n".format(labels))
-#            self.personal_log.flush()
+            resp.body=b''
         #Now, read requested data
         data_bytes_arr = []
         for idx in range(start, end):
@@ -1990,9 +1989,12 @@ class Controller(object):
             self.personal_log.flush()
             optimizer.zero_grad()
             outputs = model(inputs)
+            del inputs
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
+            del outputs
+            gc.collect()
 
     def _do_inference_iter(self, dataloader, model, res):
         """
@@ -2004,10 +2006,20 @@ class Controller(object):
         for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
             self.personal_log.write("inference idx: {}\r\n".format(idx))
             self.personal_log.flush()
+#            self.personal_log.write("Before getting outputs, used memory: {}\r\n".format(get_mem_usage()['used']))
+#            self.personal_log.flush()
             outputs = model(batch)
+            del batch
+            self.personal_log.write("after getting outputs, used memory: {}\r\n".format(get_mem_usage()['used']))
+            self.personal_log.flush()
             predicted = outputs.max(1)
+#            self.personal_log.write("after getting predicted, used memory: {}\r\n".format(get_mem_usage()['used']))
+#            self.personal_log.flush()
             res.extend(predicted[1].numpy())
-            del predicted
+#            self.personal_log.write("after extending res, used memory: {}\r\n".format(get_mem_usage()['used']))
+#            self.personal_log.flush()
+            del predicted, outputs
+            gc.collect()
 
     def _do_training(self, req, resp, headers, params):
         """
@@ -2043,12 +2055,15 @@ class Controller(object):
             #note that...only one dataloader exist for MNIST
             dataloader = read_mnist(resp.body, tempresp.body, params, train=True, logFile=self.personal_log)
         for epoch in range(num_epochs):
+            self.personal_log.write("Starting epoch: {}\r\n".format(epoch))
             if dataset == 'cifar10':
                 for obj_name in object_list:
                     #first, read the object from the storage layer
                     tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
                     dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
                     self._do_training_iter(dataloader, model, optimizer, criterion)
+                    del dataloader
+                    gc.collect()
             elif dataset == 'mnist':
                     self._do_training_iter(dataloader, model, optimizer, criterion)
             elif dataset == 'imagenet':
@@ -2063,10 +2078,13 @@ class Controller(object):
                     params['Start'],params['End'] = s,s+step
                     fut = exc.submit(self._read_imagenet, req, params, train=True) #a thread to read next batch while we consume the first batch
                     self._do_training_iter(dataloader, model, optimizer, criterion)
+                    del dataloader
                     dataloader = fut.result()
                 self._do_training_iter(dataloader, model, optimizer, criterion)	#the last batch
+                del dataloader
             scheduler.step()
         resp.body = pickle.dumps(model.state_dict())
+        gc.collect()
         return resp
 
     def _do_inference(self, req, resp, params):
@@ -2096,18 +2114,22 @@ class Controller(object):
                 params['End'] = s+step if s+step < end else end
                 dataloader = self._read_imagenet(req, params)
                 self._do_inference_iter(dataloader, model, res)
+                del dataloader
+                gc.collect()
+                self.personal_log.write("length of res now is {}\r\n".format(len(res)))
+                self.personal_log.flush()
         resp.body = b''
         gc.collect()
         mem_used = []
-        ref_count = [getrefcount(dataloader),getrefcount(model)]
+#        ref_count = [getrefcount(dataloader),getrefcount(model)]
         mem_used.append(get_mem_usage()['used'])
         del model
-        mem_used.append(get_mem_usage()['used'])
-        del dataloader
+#        mem_used.append(get_mem_usage()['used'])
+#        del dataloader
         mem_used.append(get_mem_usage()['used'])
         gc.collect()
         mem_used.append(get_mem_usage()['used'])
-        self.personal_log.write("Used memory in different phases: {}\r\n Ref counts: {}\r\n".format(mem_used,ref_count))
+        self.personal_log.write("Used memory in different phases: {}\r\n".format(mem_used))
         #convert res (which should be list of numbers) to string to put it in resp
         self.personal_log.write("Result of inference done is of length: {}\r\n".format(len(res)))
         resp.body = pickle.dumps(res)

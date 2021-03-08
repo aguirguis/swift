@@ -49,6 +49,7 @@ def read_imagenet(data_bytes_arr, labels, params, train=False, logFile=None):
     batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
     assert batch_size > 0 and batch_size <= len(dataset)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
+    del data_bytes_arr
     return dataloader
 
 def read_mnist(data_bytes, labels_bytes, params, train=False, logFile=None):
@@ -77,6 +78,7 @@ def read_mnist(data_bytes, labels_bytes, params, train=False, logFile=None):
     batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
     assert batch_size > 0 and batch_size <= len(dataset)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
+    del data_bytes
     return dataloader
 
 def read_cifar(data_bytes, params, train=False, logFile=None):
@@ -116,6 +118,7 @@ def read_cifar(data_bytes, params, train=False, logFile=None):
     batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
     assert batch_size > 0 and batch_size <= len(dataset)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
+    del data_bytes
     return dataloader
 
 #Wrapper to datasets already loaded in memory
