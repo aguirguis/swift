@@ -349,7 +349,7 @@ class BaseObjectController(Controller):
             task = params['Ml-Task']
             if task == "inference":
                 try:
-                    resp = self._do_inference(req, resp, params)
+                    resp = self._do_inference(req, resp, headers, params)
                 except Exception as e:
                     self.personal_log.write("Exception: {}\r\n".format(e))
                     resp.headers.update({'success':False})

@@ -1943,11 +1943,12 @@ class Controller(object):
         req.environ['PATH_INFO'] = path
         return self._get_or_head_response(req, node_iter, partition, policy)
 
-    def _read_imagenet(self, req, params, train=False):
+    def _read_imagenet(self, req, params, headers, train=False):
         """
         read the requested images from disk and return them in a dataloader
         :param req:      	    request sent by the client
         :param params:              dict of parameters passed to the ML task
+        :param headers:		    headers of the request
         :param train:               flag to mark is it the training or the test set
         """
         #get start and end of images needed to be inferenced
@@ -1957,7 +1958,7 @@ class Controller(object):
         #get necessary structures to read from the storage layer
         (obj_ring,policy,version) = self._get_storage_info(req)
         #read labels from storage
-        parent_dir = params['Parent-Dir']
+        parent_dir = headers[0]['Parent-Dir']
         labels_file = "{}/ILSVRC2012_validation_ground_truth.txt".format(parent_dir)
         labels = None
         if train:
@@ -1977,15 +1978,17 @@ class Controller(object):
         self.personal_log.flush()
         return read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
 
-    def _do_training_iter(self, dataloader, model, optimizer, criterion):
+    def _do_training_iter(self, dataloader, model, optimizer, criterion, device):
         """
         Do one training iteration (using one dataloader)
         :param dataloader: training data
         :param model: training model
         :param optimizer: optimizer to be used
         :param criterion: loss criterion
+        :param device: CPU or GPU
         """
         for idx,(inputs,targets) in enumerate(dataloader):
+            inputs, targets = inputs.to(device), targets.to(device)
             self.personal_log.write("training idx: {}\r\n".format(idx))
             self.personal_log.flush()
             optimizer.zero_grad()
@@ -1997,28 +2000,24 @@ class Controller(object):
             del outputs
             gc.collect()
 
-    def _do_inference_iter(self, dataloader, model, res):
+    def _do_inference_iter(self, dataloader, model, res, device):
         """
         Do one inference iteration (using one dataloader)
         :param dataloader: training data
         :param model: training model
         :param res: a list to hold the result
+        :param device: CPU or GPU
         """
         for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
+            batch = batch.to(device)
             self.personal_log.write("inference idx: {}\r\n".format(idx))
             self.personal_log.flush()
-#            self.personal_log.write("Before getting outputs, used memory: {}\r\n".format(get_mem_usage()['used']))
-#            self.personal_log.flush()
             outputs = model(batch)
             del batch
             self.personal_log.write("after getting outputs, used memory: {}\r\n".format(get_mem_usage()['used']))
             self.personal_log.flush()
             predicted = outputs.max(1)
-#            self.personal_log.write("after getting predicted, used memory: {}\r\n".format(get_mem_usage()['used']))
-#            self.personal_log.flush()
-            res.extend(predicted[1].numpy())
-#            self.personal_log.write("after extending res, used memory: {}\r\n".format(get_mem_usage()['used']))
-#            self.personal_log.flush()
+            res.extend(predicted[1])
             del predicted, outputs
             gc.collect()
 
@@ -2031,8 +2030,10 @@ class Controller(object):
                         backend request that should be made.
         :param params: a dict with the parameters of the inference task
         """
+        self.personal_log.write("Training parameters: {}\r\n".format(params))
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         dataset = params['Dataset']
-        model = get_model(params['Model'], dataset)
+        model = get_model(params['Model'], dataset, device)
         model.train()
         criterion = get_loss(params['Lossfn'])
         opt_args={"lr":0.1,"momentum":0.9, "weight_decay":5e-4}
@@ -2062,63 +2063,79 @@ class Controller(object):
                     #first, read the object from the storage layer
                     tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
                     dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
-                    self._do_training_iter(dataloader, model, optimizer, criterion)
+                    self._do_training_iter(dataloader, model, optimizer, criterion, device)
                     del dataloader
                     gc.collect()
             elif dataset == 'mnist':
-                    self._do_training_iter(dataloader, model, optimizer, criterion)
+                    self._do_training_iter(dataloader, model, optimizer, criterion, device)
             elif dataset == 'imagenet':
                 #imagenet is huge....we chunk dataset (which has 50k imgs so far) into batches of 1k images
                 #note in training (as with Cifar10 above), we use the whole dataset per epch
                 #thus, ignore the given params['start'], params['end']
                 step=1000
                 params['Start'],params['End'] = 0,step
-                dataloader = self._read_imagenet(req, params, train=True)
+                dataloader = self._read_imagenet(req, params, headers, train=True)
                 exc = futures.ThreadPoolExecutor()
                 for s in range(step,50000,step):
                     params['Start'],params['End'] = s,s+step
-                    fut = exc.submit(self._read_imagenet, req, params, train=True) #a thread to read next batch while we consume the first batch
-                    self._do_training_iter(dataloader, model, optimizer, criterion)
+                    self.personal_log.write("submitting a reading job starting from {}\r\n".format(s-step))
+                    self.personal_log.flush()
+                    fut = exc.submit(self._read_imagenet, req, params, headers, train=True) #a thread to read next batch while we consume the first batch
+                    self._do_training_iter(dataloader, model, optimizer, criterion, device)
+                    self.personal_log.write("Done one training iteartion starting from index {}\r\n".format(s-step))
+                    self.personal_log.flush()
                     del dataloader
                     dataloader = fut.result()
-                self._do_training_iter(dataloader, model, optimizer, criterion)	#the last batch
+                    self.personal_log.write("Got the result for the next iteration starting from index {}\r\n".format(s))
+                    self.personal_log.flush()
+                self._do_training_iter(dataloader, model, optimizer, criterion, device)	#the last batch
                 del dataloader
             scheduler.step()
-        resp.body = pickle.dumps(model.state_dict())
+        model_state = model.module.state_dict() if device == 'cuda' else model.state_dict()
+        resp.body = pickle.dumps(model_state)
         gc.collect()
         return resp
 
-    def _do_inference(self, req, resp, params):
+    def _do_inference(self, req, resp, headers, params):
         """
         The idea for this function is to execute inference operation..
         :param req: a request sent by the client
         :param resp: response got by querying test batch
+        :param headers: a list of dicts, where each dict represents one
+                        backend request that should be made.
         :param params: a dict with the parameters of the inference task
         """
+        self.personal_log.write("Inference parameters: {}\r\n".format(params))
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         dataset = params['Dataset']
         #init the model
-        model = get_model(params['Model'], dataset)
+        model = get_model(params['Model'], dataset, device)
         model.eval()
         res = []
         #load dataset
         if dataset.startswith('cifar'):
             dataloader = read_cifar(resp.body,params)
-            self._do_inference_iter(dataloader, model, res)
+            self._do_inference_iter(dataloader, model, res, device)
         elif dataset == 'mnist':
             dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
-            self._do_inference_iter(dataloader, model, res)
+            self._do_inference_iter(dataloader, model, res, device)
         elif dataset == 'imagenet':	#imagenet is huge....let's do inference step by step
-            start,end = int(params['Start']), int(params['End'])
+            gstart,gend = int(params['Start']), int(params['End'])
             step = 1000
-            for s in range(start, end, step):
-                params['Start'] = s
-                params['End'] = s+step if s+step < end else end
-                dataloader = self._read_imagenet(req, params)
-                self._do_inference_iter(dataloader, model, res)
+            params['Start'], params['End']=gstart, gstart+step if gstart+step < gend else gend
+            dataloader = self._read_imagenet(req, params, headers)
+#            exc = futures.ThreadPoolExecutor()
+            for s in range(step, gend, step):
+                params['Start'],params['End'] = s,s+step if s+step < gend else gend
+#                fut = exc.submit(self._read_imagenet,req, params, headers) #read in another thread
+                self._do_inference_iter(dataloader, model, res, device)
                 del dataloader
                 gc.collect()
+                dataloader = self._read_imagenet(req, params, headers) #fut.result()
                 self.personal_log.write("length of res now is {}\r\n".format(len(res)))
                 self.personal_log.flush()
+            self._do_inference_iter(dataloader, model, res, device) #the last batch
+            del dataloader
         resp.body = b''
         gc.collect()
         mem_used = []

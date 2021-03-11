@@ -4,6 +4,7 @@ import torch
 import torchvision
 import torch.nn as nn
 import torch.optim as optim
+import torch.backends.cudnn as cudnn
 from swift.proxy.mllib.models import *
 
 def get_optimizer(model, optimizer, *args, **kwargs):
@@ -36,11 +37,12 @@ def get_loss(loss_fn):
         print("The selected loss function is undefined, available losses are: ", losses.keys())
         raise
 
-def get_model(model_str, dataset):
+def get_model(model_str, dataset, device):
     """
     Returns a model of choice from the library, adapted also to the passed dataset
     :param model_str: the name of the required model
     :param dataset: the name of the dataset to be used
+    :param device: CPU or GPU
     :raises: ValueError
     :returns: Model object
     """
@@ -71,7 +73,12 @@ def get_model(model_str, dataset):
     num_classes = num_class_dict[dataset]
     if model_str not in models.keys():
         raise ValueError("Provided model ({}) is not known!".format(model_str))
-    return models[model_str](num_classes=num_classes)
+    model = models[model_str](num_classes=num_classes)
+    model = model.to(device)
+    if device == 'cuda':
+        model = nn.DataParallel(model)
+        cudnn.benchmark = True
+    return model
 
 def get_mem_usage():
     #returns a dict with memory usage values (in GBs)
