@@ -25,3 +25,8 @@ RELEASENOTES.rst
 releasenotes/notes/reno.cache
 /tools/playbooks/**/*.retry
 *build_remakerings
+.probetests
+.unittests
+doc/saio/bin/remakerings
+docker/rootfs/etc/swift_build/build_remakerings
+test/sample.conf

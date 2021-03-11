@@ -1957,7 +1957,8 @@ class Controller(object):
         #get necessary structures to read from the storage layer
         (obj_ring,policy,version) = self._get_storage_info(req)
         #read labels from storage
-        labels_file = "imagenet/ILSVRC2012_validation_ground_truth.txt"
+        parent_dir = params['Parent-Dir']
+        labels_file = "{}/ILSVRC2012_validation_ground_truth.txt".format(parent_dir)
         labels = None
         if train:
             resp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
@@ -1969,7 +1970,7 @@ class Controller(object):
         data_bytes_arr = []
         for idx in range(start, end):
             idstr = str(idx+1)			#files numbering starts from 1 rather than 0
-            obj_name = "imagenet/ILSVRC2012_val_000"+((5-len(idstr))*"0")+idstr+".JPEG"
+            obj_name = "{}/ILSVRC2012_val_000".format(parent_dir)+((5-len(idstr))*"0")+idstr+".JPEG"
             resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
             data_bytes_arr.append(resp.body)
         self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(data_bytes_arr),start,end))
