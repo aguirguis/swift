@@ -34,9 +34,10 @@ import inspect
 import itertools
 import operator
 import pickle			#for ML operations
+import _thread
+from threading import Thread
 import gc
 import resource
-import concurrent.futures as futures
 from sys import getrefcount
 import numpy as np
 import torch
@@ -47,6 +48,7 @@ from sys import exc_info
 from swift import gettext_ as _
 
 from eventlet import sleep
+import eventlet.greenthread as gthread
 from eventlet.timeout import Timeout
 import six
 
@@ -1976,7 +1978,8 @@ class Controller(object):
             data_bytes_arr.append(resp.body)
         self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(data_bytes_arr),start,end))
         self.personal_log.flush()
-        return read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
+        dataloader = read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
+        return dataloader
 
     def _do_training_iter(self, dataloader, model, optimizer, criterion, device):
         """
@@ -2032,6 +2035,8 @@ class Controller(object):
         """
         self.personal_log.write("Training parameters: {}\r\n".format(params))
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if device == 'cuda':
+            torch.cuda.empty_cache()
         dataset = params['Dataset']
         model = get_model(params['Model'], dataset, device)
         model.train()
@@ -2074,20 +2079,15 @@ class Controller(object):
                 #thus, ignore the given params['start'], params['end']
                 step=1000
                 params['Start'],params['End'] = 0,step
+                read_t = time.time()
                 dataloader = self._read_imagenet(req, params, headers, train=True)
-                exc = futures.ThreadPoolExecutor()
+                self.personal_log.write("Reading Imagenet images took {} seconds\r\n".format(time.time()-read_t))
                 for s in range(step,50000,step):
                     params['Start'],params['End'] = s,s+step
-                    self.personal_log.write("submitting a reading job starting from {}\r\n".format(s-step))
-                    self.personal_log.flush()
-                    fut = exc.submit(self._read_imagenet, req, params, headers, train=True) #a thread to read next batch while we consume the first batch
+                    fut = gthread.spawn(self._read_imagenet, req, params, headers, train=True)
                     self._do_training_iter(dataloader, model, optimizer, criterion, device)
-                    self.personal_log.write("Done one training iteartion starting from index {}\r\n".format(s-step))
-                    self.personal_log.flush()
                     del dataloader
-                    dataloader = fut.result()
-                    self.personal_log.write("Got the result for the next iteration starting from index {}\r\n".format(s))
-                    self.personal_log.flush()
+                    dataloader = fut.wait()
                 self._do_training_iter(dataloader, model, optimizer, criterion, device)	#the last batch
                 del dataloader
             scheduler.step()
@@ -2107,6 +2107,8 @@ class Controller(object):
         """
         self.personal_log.write("Inference parameters: {}\r\n".format(params))
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if device == 'cuda':
+            torch.cuda.empty_cache()
         dataset = params['Dataset']
         #init the model
         model = get_model(params['Model'], dataset, device)
@@ -2120,21 +2122,38 @@ class Controller(object):
             dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
             self._do_inference_iter(dataloader, model, res, device)
         elif dataset == 'imagenet':	#imagenet is huge....let's do inference step by step
+            global next_dataloader
+            def start_now(gt):
+                global next_dataloader
+                next_dataloader = None
+                next_dataloader = gt.wait()
             gstart,gend = int(params['Start']), int(params['End'])
             step = 1000
             params['Start'], params['End']=gstart, gstart+step if gstart+step < gend else gend
             dataloader = self._read_imagenet(req, params, headers)
-#            exc = futures.ThreadPoolExecutor()
-            for s in range(step, gend, step):
+            gstart_t = time.time()
+            for s in range(gstart+step, gend, step):
+#                start_t = time.time()
                 params['Start'],params['End'] = s,s+step if s+step < gend else gend
-#                fut = exc.submit(self._read_imagenet,req, params, headers) #read in another thread
+                fut = gthread.spawn(self._read_imagenet,req, params, headers) #read in another thread
+#                myt = _thread.start_new_thread(start_now,(fut))
+                myt = Thread(target=start_now, args=(fut,))
+                myt.start()
+#                self.personal_log.write("Time before do inference: {}\r\n".format(time.time()-start_t))
                 self._do_inference_iter(dataloader, model, res, device)
+#                self.personal_log.write("Time after do inference: {}\r\n".format(time.time()-start_t))
                 del dataloader
                 gc.collect()
-                dataloader = self._read_imagenet(req, params, headers) #fut.result()
+                if next_dataloader == None:
+                    myt.join() #fut.wait()
+                assert next_dataloader is not None
+                dataloader = next_dataloader
+                next_dataloader = None
+#                self.personal_log.write("Time at the end of the loop {}\r\n".format(time.time()-start_t))
                 self.personal_log.write("length of res now is {}\r\n".format(len(res)))
                 self.personal_log.flush()
             self._do_inference_iter(dataloader, model, res, device) #the last batch
+            self.personal_log.write("Inference for this post took {}\r\n".format(time.time()-gstart_t))
             del dataloader
         resp.body = b''
         gc.collect()
