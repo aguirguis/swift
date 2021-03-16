@@ -16,19 +16,19 @@ SN3_PASCALVINCENT_TYPEMAP = {
     14: (torch.float64, np.dtype('>f8'), 'f8')
 }
 
-def read_imagenet(data_bytes_arr, labels, params, train=False, logFile=None):
+def load_imagenet(imgs, labels, params, train=False, logFile=None):
     """
-    read Imagenet dataset from data_bytes and return the result in the form of dataloader
-    :param data_bytes_arr:      array of images encoded in bytes format
+    return the result in the form of dataloader
+    :param imgs:              array of images to be loaded
     :param labels_bytes:        labels in txt format
     :param params:             	dict of parameters passed to the ML task
     :param train:              	flag to mark is it the training or the test set
     :param logFile:             file handle to log whatever in it (for debugging purposes)
     """
+    imgs = [np.array(Image.open(BytesIO(img)).convert('RGB')) for img in imgs]
+    imgs = np.array(imgs)
     if labels is not None:
-        assert len(data_bytes_arr) == len(labels)
-    images = [np.array(Image.open(BytesIO(data_bytes)).convert('RGB')) for data_bytes in data_bytes_arr]
-    imgs = np.array(images)
+        assert len(imgs) == len(labels)
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
     if train:
@@ -49,7 +49,7 @@ def read_imagenet(data_bytes_arr, labels, params, train=False, logFile=None):
     batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
     assert batch_size > 0 and batch_size <= len(dataset)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
-    del data_bytes_arr
+    del imgs
     return dataloader
 
 def read_mnist(data_bytes, labels_bytes, params, train=False, logFile=None):

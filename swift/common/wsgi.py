@@ -1065,7 +1065,7 @@ def run_wsgi(conf_path, app_section, *args, **kwargs):
             int(conf['bind_port'])
         except (ValueError, KeyError, TypeError):
             error_msg = 'bind_port wasn\'t properly set in the config file. ' \
-                'It must be explicitly set to a valid port number.'
+                'It must be explicitly set to a valid port number. at {}'.format(conf)
             logger.error(error_msg)
             print(error_msg)
             return 1

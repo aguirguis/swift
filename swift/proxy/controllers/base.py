@@ -25,7 +25,7 @@
 # collected. We've seen objects hang around forever otherwise.
 
 from six.moves.urllib.parse import quote
-
+from queue import Queue
 import os
 import time
 import json
@@ -36,12 +36,19 @@ import operator
 import pickle			#for ML operations
 import _thread
 from threading import Thread
+import threading
+import multiprocessing
+#from multiprocessing.pool import ThreadPool as Pool
+#from multiprocessing import Pool
+from multiprocessing import Process
 import gc
 import resource
 from sys import getrefcount
 import numpy as np
+from PIL import Image
+from io import BytesIO
 import torch
-from swift.proxy.mllib.dataset_utils import read_cifar, read_mnist, read_imagenet
+from swift.proxy.mllib.dataset_utils import read_cifar, read_mnist, load_imagenet
 from swift.proxy.mllib.utils import *
 from copy import deepcopy
 from sys import exc_info
@@ -1362,7 +1369,7 @@ class GetOrHeadHandler(object):
         else:
             return None
 
-    def _make_node_request(self, node, node_timeout, logger_thread_locals):
+    def _make_node_request(self, node, node_timeout, logger_thread_locals, logFile):
         self.app.logger.thread_locals = logger_thread_locals
         if node in self.used_nodes:
             return False
@@ -1466,7 +1473,7 @@ class GetOrHeadHandler(object):
                      'type': self.server_type})
         return False
 
-    def _get_source_and_node(self):
+    def _get_source_and_node(self, logFile=None):
         self.statuses = []
         self.reasons = []
         self.bodies = []
@@ -1479,11 +1486,12 @@ class GetOrHeadHandler(object):
         if self.server_type == 'Object' and not self.newest:
             node_timeout = self.app.recoverable_node_timeout
 
-        pile = GreenAsyncPile(self.concurrency)
+        pile = GreenAsyncPile(self.concurrency, logFile)
 
+        iter_time = time.time()
         for node in nodes:
             pile.spawn(self._make_node_request, node, node_timeout,
-                       self.app.logger.thread_locals)
+                       self.app.logger.thread_locals, logFile)
             _timeout = self.app.get_policy_options(
                 self.policy).concurrency_timeout \
                 if pile.inflight < self.concurrency else None
@@ -1555,8 +1563,8 @@ class GetOrHeadHandler(object):
             (add_content_type(pi) for pi in parts_iter),
             boundary, is_multipart, self.app.logger)
 
-    def get_working_response(self, req):
-        source, node = self._get_source_and_node()
+    def get_working_response(self, req, logFile=None):
+        source, node = self._get_source_and_node(logFile)
         res = None
         if source:
             res = Response(request=req)
@@ -1714,8 +1722,6 @@ class Controller(object):
         self._allowed_methods = None
         self._private_methods = None
         self.personal_log = open(os.environ['HOME']+ "/swift_personal_log.txt",'a')
-#        self.personal_log.write("init in Controller class, proxy/controllers/base.py \n")
-#        self.personal_log.flush()
 
     @property
     def allowed_methods(self):
@@ -1930,7 +1936,7 @@ class Controller(object):
         version="/"+version
         return (obj_ring,policy,version)
 
-    def _read_from_storage(self, req, obj_name, obj_ring, policy, version):
+    def _read_from_storage(self, req, obj_name, obj_ring, policy, version, out_q):
         """
         read the object from the storage layer
         :param req: request sent by the client
@@ -1939,46 +1945,57 @@ class Controller(object):
         :param policy: storage policy
         :param version: authentication version
         """
+#        readtime = time.time()
         partition = obj_ring.get_part(self.account_name, self.container_name, obj_name)
         node_iter = self.app.iter_nodes(obj_ring, partition, policy=policy)
         path = os.path.join(version, self.account_name, self.container_name, obj_name)
         req.environ['PATH_INFO'] = path
-        return self._get_or_head_response(req, node_iter, partition, policy)
+#        self.personal_log.write("Time before get or head: {}\r\n".format(time.time()-readtime))
+#        self.personal_log.flush()
+        res = self._get_or_head_response(req, node_iter, partition, policy).body
+#        self.personal_log.write("Time after get or head: {}\r\n".format(time.time()-readtime))
+#        self.personal_log.flush()
+        out_q.put(res)
+        return res
 
-    def _read_imagenet(self, req, params, headers, train=False):
+    def _read_imagenet(self, req, params, labels, train=False):
         """
         read the requested images from disk and return them in a dataloader
         :param req:      	    request sent by the client
         :param params:              dict of parameters passed to the ML task
-        :param headers:		    headers of the request
+        :param labels:		    list of labels of the current image batch
         :param train:               flag to mark is it the training or the test set
         """
         #get start and end of images needed to be inferenced
         start = int(params['Start']) if 'Start' in params.keys() else 0
         end = int(params['End']) if 'End' in params.keys() else 50000	#Imagenet set currently has 50K images
         assert start >= 0 and end <= 50000
+        parent_dir='val'		#TODO: make it generic later (e.g., pass it with params)
         #get necessary structures to read from the storage layer
         (obj_ring,policy,version) = self._get_storage_info(req)
-        #read labels from storage
-        parent_dir = headers[0]['Parent-Dir']
-        labels_file = "{}/ILSVRC2012_validation_ground_truth.txt".format(parent_dir)
-        labels = None
-        if train:
-            resp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
-            labels = resp.body.decode("utf-8").split("\n")
-            #no need to take all labels; only those in the requeste
-            labels = [int(l)-1 for l in labels[start:end]]		#note that original labels are given from 1 to 1000
-            resp.body=b''
         #Now, read requested data
-        data_bytes_arr = []
-        for idx in range(start, end):
-            idstr = str(idx+1)			#files numbering starts from 1 rather than 0
-            obj_name = "{}/ILSVRC2012_val_000".format(parent_dir)+((5-len(idstr))*"0")+idstr+".JPEG"
-            resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
-            data_bytes_arr.append(resp.body)
-        self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(data_bytes_arr),start,end))
+#        def read_image(obj_name):
+#            resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
+#            return np.array(Image.open(BytesIO(resp.body)).convert('RGB'))
+        idtostr = lambda idx: "{}/ILSVRC2012_val_000".format(parent_dir)+((5-len(str(idx+1)))*"0")+str(idx+1)+".JPEG"
+        objects = [idtostr(idx) for idx in range(start,end)]
+        self.personal_log.write("Done first loop\r\n")
         self.personal_log.flush()
-        dataloader = read_imagenet(data_bytes_arr, labels, params, train=train, logFile=self.personal_log)
+        out_q = Queue()
+        threads = [Thread(target=self._read_from_storage, args=(req, obj_name, obj_ring, policy, version,out_q)) for obj_name in objects]
+        self.personal_log.write("Done creating threads loop\r\n")
+        self.personal_log.flush()
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+#        images = [self._read_from_storage(req, obj_name, obj_ring, policy, version) for obj_name in objects]
+        images = list(out_q.queue)
+        self.personal_log.write("Done second loop, len of Queue {}\r\n".format(out_q.qsize()))
+        self.personal_log.flush()
+        self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(images),start,end))
+        self.personal_log.flush()
+        dataloader = load_imagenet(images, labels, params, train=train, logFile=self.personal_log)
         return dataloader
 
     def _do_training_iter(self, dataloader, model, optimizer, criterion, device):
@@ -2061,6 +2078,16 @@ class Controller(object):
             #IMPORTANT: here we assume the POST method is called on the training file of MNIST
             #note that...only one dataloader exist for MNIST
             dataloader = read_mnist(resp.body, tempresp.body, params, train=True, logFile=self.personal_log)
+        elif dataset == 'imagenet':
+            #read labels from storage
+            parent_dir = headers[0]['Parent-Dir']
+            labels_file = "{}/ILSVRC2012_validation_ground_truth.txt".format(parent_dir)
+            labels = None
+            resp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
+            labels = resp.body.decode("utf-8").split("\n")
+            #remove the last additional ''
+            labels = [int(l)-1 for l in labels[:-1]]              #note that original labels are given from 1 to 1000
+            resp.body=b''
         for epoch in range(num_epochs):
             self.personal_log.write("Starting epoch: {}\r\n".format(epoch))
             if dataset == 'cifar10':
@@ -2080,14 +2107,17 @@ class Controller(object):
                 step=1000
                 params['Start'],params['End'] = 0,step
                 read_t = time.time()
-                dataloader = self._read_imagenet(req, params, headers, train=True)
+                dataloader = self._read_imagenet(req, params, labels[0:step], train=True)
                 self.personal_log.write("Reading Imagenet images took {} seconds\r\n".format(time.time()-read_t))
                 for s in range(step,50000,step):
                     params['Start'],params['End'] = s,s+step
-                    fut = gthread.spawn(self._read_imagenet, req, params, headers, train=True)
+                    fut = gthread.spawn(self._read_imagenet, req, params, labels[s:s+step], train=True)
+                    start_t = time.time()
                     self._do_training_iter(dataloader, model, optimizer, criterion, device)
+                    self.personal_log.write("Training iteration took {} seconds\r\n".format(time.time()-start_t))
                     del dataloader
                     dataloader = fut.wait()
+                    self.personal_log.write("End of training loop took {} seconds\r\n".format(time.time()-start_t))
                 self._do_training_iter(dataloader, model, optimizer, criterion, device)	#the last batch
                 del dataloader
             scheduler.step()
@@ -2122,34 +2152,35 @@ class Controller(object):
             dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
             self._do_inference_iter(dataloader, model, res, device)
         elif dataset == 'imagenet':	#imagenet is huge....let's do inference step by step
-            global next_dataloader
-            def start_now(gt):
-                global next_dataloader
-                next_dataloader = None
-                next_dataloader = gt.wait()
+            next_dataloader = None
+            def start_now(req, params, headers, out_q):
+                next_dataloader = self._read_imagenet(req, params, None)
+                out_q.put(next_dataloader)
+                return
+
             gstart,gend = int(params['Start']), int(params['End'])
             step = 1000
             params['Start'], params['End']=gstart, gstart+step if gstart+step < gend else gend
-            dataloader = self._read_imagenet(req, params, headers)
+            dataloader = self._read_imagenet(req, params, None)
             gstart_t = time.time()
+            out_q = Queue()
             for s in range(gstart+step, gend, step):
-#                start_t = time.time()
+                start_t = time.time()
                 params['Start'],params['End'] = s,s+step if s+step < gend else gend
-                fut = gthread.spawn(self._read_imagenet,req, params, headers) #read in another thread
-#                myt = _thread.start_new_thread(start_now,(fut))
-                myt = Thread(target=start_now, args=(fut,))
+                myt = Thread(target=start_now, args=(req, params, headers,out_q,))
+#                myt = Process(target=start_now, args=(req, params, headers,out_q,))
                 myt.start()
-#                self.personal_log.write("Time before do inference: {}\r\n".format(time.time()-start_t))
+                self.personal_log.write("Time before do inference: {} CPU count {}\r\n".format(time.time()-start_t,multiprocessing.cpu_count()))
                 self._do_inference_iter(dataloader, model, res, device)
-#                self.personal_log.write("Time after do inference: {}\r\n".format(time.time()-start_t))
-                del dataloader
-                gc.collect()
-                if next_dataloader == None:
-                    myt.join() #fut.wait()
+                self.personal_log.write("Time after do inference: {} Q size: {}\r\n".format(time.time()-start_t, out_q.qsize()))
+                self.personal_log.flush()
+                myt.join()
+                next_dataloader = out_q.get()
+#                next_dataloader = self._read_imagenet(req, params, None)
                 assert next_dataloader is not None
                 dataloader = next_dataloader
                 next_dataloader = None
-#                self.personal_log.write("Time at the end of the loop {}\r\n".format(time.time()-start_t))
+                self.personal_log.write("Time at the end of the loop {}\r\n".format(time.time()-start_t))
                 self.personal_log.write("length of res now is {}\r\n".format(len(res)))
                 self.personal_log.flush()
             self._do_inference_iter(dataloader, model, res, device) #the last batch
@@ -2158,11 +2189,8 @@ class Controller(object):
         resp.body = b''
         gc.collect()
         mem_used = []
-#        ref_count = [getrefcount(dataloader),getrefcount(model)]
         mem_used.append(get_mem_usage()['used'])
         del model
-#        mem_used.append(get_mem_usage()['used'])
-#        del dataloader
         mem_used.append(get_mem_usage()['used'])
         gc.collect()
         mem_used.append(get_mem_usage()['used'])
@@ -2403,8 +2431,7 @@ class Controller(object):
                                    partition, path, backend_headers,
                                    concurrency, policy=policy,
                                    client_chunk_size=client_chunk_size)
-        res = handler.get_working_response(req)
-
+        res = handler.get_working_response(req, logFile=self.personal_log)
         if not res:
             res = self.best_response(
                 req, handler.statuses, handler.reasons, handler.bodies,

@@ -3412,7 +3412,7 @@ class GreenAsyncPile(object):
 
     Correlating results with jobs (if necessary) is left to the caller.
     """
-    def __init__(self, size_or_pool):
+    def __init__(self, size_or_pool, logFile=None):
         """
         :param size_or_pool: thread pool size or a pool to use
         """
@@ -3475,7 +3475,7 @@ class GreenAsyncPile(object):
                     results.append(next(self))
                     if first_n and len(results) >= first_n:
                         break
-        except (GreenAsyncPileWaitallTimeout, StopIteration):
+        except (GreenAsyncPileWaitallTimeout, StopIteration) as e:
             pass
         return results
 

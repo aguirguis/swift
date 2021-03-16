@@ -959,8 +959,8 @@ class Request(object):
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': parsed_path.scheme or 'http',
             'wsgi.errors': StringIO(),
-            'wsgi.multithread': False,
-            'wsgi.multiprocess': False
+            'wsgi.multithread': True,
+            'wsgi.multiprocess': True
         }
         env.update(environ)
         if body is not None:

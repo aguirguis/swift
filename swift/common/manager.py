@@ -58,7 +58,7 @@ WARNING_WAIT = 3  # seconds to wait after message that may just be a warning
 
 MAX_DESCRIPTORS = 32768
 MAX_MEMORY = -1 #(1024 * 1024 * 1024) * 150  # 2 GB
-MAX_PROCS = 8192  # workers * disks, can get high
+MAX_PROCS = -1 #8192  # workers * disks, can get high
 
 
 def setup_env():
