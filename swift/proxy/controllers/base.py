@@ -1936,7 +1936,7 @@ class Controller(object):
         version="/"+version
         return (obj_ring,policy,version)
 
-    def _read_from_storage(self, req, obj_name, obj_ring, policy, version, out_q):
+    def _read_from_storage(self, req, obj_name, obj_ring, policy, version, out_q=None):
         """
         read the object from the storage layer
         :param req: request sent by the client
@@ -1955,7 +1955,8 @@ class Controller(object):
         res = self._get_or_head_response(req, node_iter, partition, policy).body
 #        self.personal_log.write("Time after get or head: {}\r\n".format(time.time()-readtime))
 #        self.personal_log.flush()
-        out_q.put(res)
+        if out_q is not None:
+            out_q.put(res)
         return res
 
     def _read_imagenet(self, req, params, labels, train=False):
@@ -1974,25 +1975,18 @@ class Controller(object):
         #get necessary structures to read from the storage layer
         (obj_ring,policy,version) = self._get_storage_info(req)
         #Now, read requested data
-#        def read_image(obj_name):
-#            resp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
-#            return np.array(Image.open(BytesIO(resp.body)).convert('RGB'))
         idtostr = lambda idx: "{}/ILSVRC2012_val_000".format(parent_dir)+((5-len(str(idx+1)))*"0")+str(idx+1)+".JPEG"
         objects = [idtostr(idx) for idx in range(start,end)]
-        self.personal_log.write("Done first loop\r\n")
-        self.personal_log.flush()
         out_q = Queue()
         threads = [Thread(target=self._read_from_storage, args=(req, obj_name, obj_ring, policy, version,out_q)) for obj_name in objects]
-        self.personal_log.write("Done creating threads loop\r\n")
-        self.personal_log.flush()
+#        self.personal_log.write("Done creating threads loop\r\n")
+#        self.personal_log.flush()
         for th in threads:
             th.start()
         for th in threads:
             th.join()
 #        images = [self._read_from_storage(req, obj_name, obj_ring, policy, version) for obj_name in objects]
         images = list(out_q.queue)
-        self.personal_log.write("Done second loop, len of Queue {}\r\n".format(out_q.qsize()))
-        self.personal_log.flush()
         self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(images),start,end))
         self.personal_log.flush()
         dataloader = load_imagenet(images, labels, params, train=train, logFile=self.personal_log)
@@ -2020,25 +2014,29 @@ class Controller(object):
             del outputs
             gc.collect()
 
-    def _do_inference_iter(self, dataloader, model, res, device):
+    def _do_inference_iter(self, dataloader, model, res, device, split_idx=None):
         """
         Do one inference iteration (using one dataloader)
         :param dataloader: training data
         :param model: training model
         :param res: a list to hold the result
         :param device: CPU or GPU
+        :param split_idx: the index at which the output is required; this is only valid with the custom models (which start with "my")
         """
         for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
             batch = batch.to(device)
-            self.personal_log.write("inference idx: {}\r\n".format(idx))
+            if split_idx is not None:
+                outputs = model(batch,0,split_idx)		#currently we assume we always start from the beginning
+                res.extend(outputs.cpu().detach().numpy())
+                del outputs
+            else:
+                outputs = model(batch)
+                predicted = outputs.max(1)
+                res.extend(predicted[1])
+                del outputs, predicted
+            self.personal_log.write("after getting outputs, used memory: {} res size {}\r\n".format(get_mem_usage()['used'], len(res)))
             self.personal_log.flush()
-            outputs = model(batch)
             del batch
-            self.personal_log.write("after getting outputs, used memory: {}\r\n".format(get_mem_usage()['used']))
-            self.personal_log.flush()
-            predicted = outputs.max(1)
-            res.extend(predicted[1])
-            del predicted, outputs
             gc.collect()
 
     def _do_training(self, req, resp, headers, params):
@@ -2141,16 +2139,21 @@ class Controller(object):
             torch.cuda.empty_cache()
         dataset = params['Dataset']
         #init the model
-        model = get_model(params['Model'], dataset, device)
+        model = get_model(params['Model'], dataset, device, self.personal_log)
+        if 'Split-Idx' in params.keys():
+            split_idx = int(params['Split-Idx'])
+#            model.train()			#this is really training (transfer learning to be precise), not inference!!
+        else:
+            split_idx=None
         model.eval()
         res = []
         #load dataset
         if dataset.startswith('cifar'):
             dataloader = read_cifar(resp.body,params)
-            self._do_inference_iter(dataloader, model, res, device)
+            self._do_inference_iter(dataloader, model, res, device,split_idx)
         elif dataset == 'mnist':
             dataloader = read_mnist(resp.body, None, params, logFile=self.personal_log)
-            self._do_inference_iter(dataloader, model, res, device)
+            self._do_inference_iter(dataloader, model, res, device, split_idx)
         elif dataset == 'imagenet':	#imagenet is huge....let's do inference step by step
             next_dataloader = None
             def start_now(req, params, headers, out_q):
@@ -2168,19 +2171,18 @@ class Controller(object):
                 start_t = time.time()
                 params['Start'],params['End'] = s,s+step if s+step < gend else gend
                 myt = Thread(target=start_now, args=(req, params, headers,out_q,))
-#                myt = Process(target=start_now, args=(req, params, headers,out_q,))
                 myt.start()
-                self.personal_log.write("Time before do inference: {} CPU count {}\r\n".format(time.time()-start_t,multiprocessing.cpu_count()))
-                self._do_inference_iter(dataloader, model, res, device)
-                self.personal_log.write("Time after do inference: {} Q size: {}\r\n".format(time.time()-start_t, out_q.qsize()))
-                self.personal_log.flush()
+#                self.personal_log.write("Time before do inference: {} CPU count {}\r\n".format(time.time()-start_t,multiprocessing.cpu_count()))
+                self._do_inference_iter(dataloader, model, res, device, split_idx)
+#                self.personal_log.write("Time after do inference: {} Q size: {}\r\n".format(time.time()-start_t, out_q.qsize()))
+#                self.personal_log.flush()
                 myt.join()
                 next_dataloader = out_q.get()
 #                next_dataloader = self._read_imagenet(req, params, None)
                 assert next_dataloader is not None
                 dataloader = next_dataloader
                 next_dataloader = None
-                self.personal_log.write("Time at the end of the loop {}\r\n".format(time.time()-start_t))
+#                self.personal_log.write("Time at the end of the loop {}\r\n".format(time.time()-start_t))
                 self.personal_log.write("length of res now is {}\r\n".format(len(res)))
                 self.personal_log.flush()
             self._do_inference_iter(dataloader, model, res, device) #the last batch
@@ -2196,11 +2198,11 @@ class Controller(object):
         mem_used.append(get_mem_usage()['used'])
         self.personal_log.write("Used memory in different phases: {}\r\n".format(mem_used))
         #convert res (which should be list of numbers) to string to put it in resp
-        self.personal_log.write("Result of inference done is of length: {}\r\n".format(len(res)))
         resp.body = pickle.dumps(res)
         del res
         gc.collect()
         self.personal_log.write("Final emory usage before exiting: {}\r\n".format(get_mem_usage()))
+        self.personal_log.flush()
         return resp
 
     def make_requests(self, req, ring, part, method, path, headers,

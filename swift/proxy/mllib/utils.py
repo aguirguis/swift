@@ -37,7 +37,7 @@ def get_loss(loss_fn):
         print("The selected loss function is undefined, available losses are: ", losses.keys())
         raise
 
-def get_model(model_str, dataset, device):
+def get_model(model_str, dataset, device, logFile=None):
     """
     Returns a model of choice from the library, adapted also to the passed dataset
     :param model_str: the name of the required model
@@ -46,7 +46,28 @@ def get_model(model_str, dataset, device):
     :raises: ValueError
     :returns: Model object
     """
-    models = {'convnet':Net,
+    num_class_dict = {'mnist':10, 'cifar10':10, 'cifar100':100, 'imagenet':1000}
+    if dataset not in num_class_dict.keys():
+        raise ValueError("Provided dataset ({}) is not known!".format(dataset))
+    num_classes = num_class_dict[dataset]
+    #Check if it is a native model or custom. The later should start with "my"
+    if model_str.startswith('my'):
+        #currently, we support: build_my_vgg, build_my_alexnet, build_my_inception, build_my_resnet, build_my_densenet
+        model_str = model_str[2:]	#remove the "my" prefix
+        if model_str.startswith('alex'):
+            model = build_my_alexnet(num_classes)
+        elif model_str.startswith('inception'):
+            model = build_my_inception(num_classes)
+        elif model_str.startswith('res'):
+            model = build_my_resnet(model_str, num_classes, logFile)
+        elif model_str.startswith('vgg'):
+            model = build_my_vgg(model_str, num_classes)
+        elif model_str.startswith('dense'):
+            model = build_my_densenet(model_str, num_classes)
+        else:
+            ValueError("Provided model ({}) is not known!".format(model_str))
+    else:
+        models = {'convnet':Net,
 		'cifarnet':Cifarnet,
 		'cnn': CNNet,
 		'resnet18':torchvision.models.resnet18,
@@ -67,13 +88,9 @@ def get_model(model_str, dataset, device):
 		'senet18': SENet18,
 		'efficientnetb0': EfficientNetB0,
 		'regnetx200': RegNetX_200MF}
-    num_class_dict = {'mnist':10, 'cifar10':10, 'cifar100':100, 'imagenet':1000}
-    if dataset not in num_class_dict.keys():
-        raise ValueError("Provided dataset ({}) is not known!".format(dataset))
-    num_classes = num_class_dict[dataset]
-    if model_str not in models.keys():
-        raise ValueError("Provided model ({}) is not known!".format(model_str))
-    model = models[model_str](num_classes=num_classes)
+        if model_str not in models.keys():
+            raise ValueError("Provided model ({}) is not known!".format(model_str))
+        model = models[model_str](num_classes=num_classes)
     model = model.to(device)
     if device == 'cuda':
         model = nn.DataParallel(model)
