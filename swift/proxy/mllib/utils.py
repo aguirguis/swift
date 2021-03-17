@@ -37,7 +37,7 @@ def get_loss(loss_fn):
         print("The selected loss function is undefined, available losses are: ", losses.keys())
         raise
 
-def get_model(model_str, dataset, device, logFile=None):
+def get_model(model_str, dataset, device):
     """
     Returns a model of choice from the library, adapted also to the passed dataset
     :param model_str: the name of the required model
@@ -59,7 +59,7 @@ def get_model(model_str, dataset, device, logFile=None):
         elif model_str.startswith('inception'):
             model = build_my_inception(num_classes)
         elif model_str.startswith('res'):
-            model = build_my_resnet(model_str, num_classes, logFile)
+            model = build_my_resnet(model_str, num_classes)
         elif model_str.startswith('vgg'):
             model = build_my_vgg(model_str, num_classes)
         elif model_str.startswith('dense'):

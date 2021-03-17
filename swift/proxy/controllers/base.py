@@ -2027,7 +2027,7 @@ class Controller(object):
             batch = batch.to(device)
             if split_idx is not None:
                 outputs = model(batch,0,split_idx)		#currently we assume we always start from the beginning
-                res.extend(outputs.cpu().detach().numpy())
+                res.append(outputs.cpu().detach().numpy())
                 del outputs
             else:
                 outputs = model(batch)
@@ -2139,7 +2139,7 @@ class Controller(object):
             torch.cuda.empty_cache()
         dataset = params['Dataset']
         #init the model
-        model = get_model(params['Model'], dataset, device, self.personal_log)
+        model = get_model(params['Model'], dataset, device)
         if 'Split-Idx' in params.keys():
             split_idx = int(params['Split-Idx'])
 #            model.train()			#this is really training (transfer learning to be precise), not inference!!
