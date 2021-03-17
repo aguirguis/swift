@@ -2140,7 +2140,7 @@ class Controller(object):
         dataset = params['Dataset']
         #init the model
         model = get_model(params['Model'], dataset, device)
-        if 'Split-Idx' in params.keys():
+        if params['Model'].startswith('my') and 'Split-Idx' in params.keys():
             split_idx = int(params['Split-Idx'])
 #            model.train()			#this is really training (transfer learning to be precise), not inference!!
         else:
