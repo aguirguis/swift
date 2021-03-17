@@ -2027,7 +2027,7 @@ class Controller(object):
             batch = batch.to(device)
             if split_idx is not None:
                 outputs = model(batch,0,split_idx)		#currently we assume we always start from the beginning
-                res.append(outputs.cpu().detach().numpy())
+                res.extend(outputs.cpu().detach().numpy())	#will do batching on the other side
                 del outputs
             else:
                 outputs = model(batch)
