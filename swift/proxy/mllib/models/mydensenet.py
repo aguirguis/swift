@@ -15,19 +15,16 @@ def remove_sequential(network, all_layers):
             all_layers.append(layer)
 
 class MyDenseNet(DenseNet):
-    def __init__(self, *args, **kwargs):
-        super(MyDenseNet, self).__init__(*args, **kwargs)
-        self.all_layers = []
-        remove_sequential(self, self.all_layers)
-#        print("Length of all layers: ", len(self.all_layers))
 
     def forward(self, x:Tensor, start: int, end: int) -> Tensor:
       idx = 0
+      all_layers=[]
+      remove_sequential(self, all_layers)
 #      print("Input data size: {} KBs".format(x.element_size() * x.nelement()/1024))
       for idx in range(start, end):
-          if idx >= len(self.all_layers):		#we avoid out of bounds
+          if idx >= len(all_layers):		#we avoid out of bounds
               break
-          m = self.all_layers[idx]
+          m = all_layers[idx]
           if isinstance(m, torch.nn.modules.linear.Linear):
               x = F.relu(x, inplace=True)
               x = F.adaptive_avg_pool2d(x, (1, 1))

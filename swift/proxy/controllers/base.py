@@ -2185,7 +2185,7 @@ class Controller(object):
 #                self.personal_log.write("Time at the end of the loop {}\r\n".format(time.time()-start_t))
                 self.personal_log.write("length of res now is {}\r\n".format(len(res)))
                 self.personal_log.flush()
-            self._do_inference_iter(dataloader, model, res, device) #the last batch
+            self._do_inference_iter(dataloader, model, res, device, split_idx) #the last batch
             self.personal_log.write("Inference for this post took {}\r\n".format(time.time()-gstart_t))
             del dataloader
         resp.body = b''
