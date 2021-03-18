@@ -2023,19 +2023,20 @@ class Controller(object):
         :param device: CPU or GPU
         :param split_idx: the index at which the output is required; this is only valid with the custom models (which start with "my")
         """
-        for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
-            batch = batch.to(device)
-            if split_idx is not None:
-                outputs = model(batch,0,split_idx)		#currently we assume we always start from the beginning
-                res.extend(outputs.cpu().detach().numpy())	#will do batching on the other side
-                del outputs
-            else:
-                outputs = model(batch)
-                predicted = outputs.max(1)
-                res.extend(predicted[1])
-                del outputs, predicted
-            self.personal_log.write("after getting outputs, used memory: {} res size {}\r\n".format(get_mem_usage()['used'], len(res)))
-            self.personal_log.flush()
+        with torch.no_grad():
+            for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
+                batch = batch.to(device)
+                if split_idx is not None:
+                    outputs = model(batch,0,split_idx)		#currently we assume we always start from the beginning
+                    res.extend(outputs.cpu().detach().numpy())	#will do batching on the other side
+                    del outputs
+                else:
+                    outputs = model(batch)
+                    predicted = outputs.max(1)
+                    res.extend(predicted[1])
+                    del outputs, predicted
+                self.personal_log.write("after getting outputs, used memory: {} res size {}\r\n".format(get_mem_usage()['used'], len(res)))
+                self.personal_log.flush()
             del batch
             gc.collect()
 
@@ -2142,7 +2143,6 @@ class Controller(object):
         model = get_model(params['Model'], dataset, device)
         if params['Model'].startswith('my') and 'Split-Idx' in params.keys():
             split_idx = int(params['Split-Idx'])
-#            model.train()			#this is really training (transfer learning to be precise), not inference!!
         else:
             split_idx=None
         model.eval()
