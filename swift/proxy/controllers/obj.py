@@ -347,6 +347,7 @@ class BaseObjectController(Controller):
             req.method = 'GET'
             resp = self._get_or_head_response(req, node_iter, partition, policy)
             task = params['Ml-Task']
+            task_time = time.time()
             if task == "inference":
                 try:
                     resp = self._do_inference(req, resp, headers, params)
@@ -360,6 +361,7 @@ class BaseObjectController(Controller):
                     self.personal_log.write("Exception: {}\r\n".format(e))
                     resp.headers.update({'success':False})
             self.personal_log.write("{} done...body length {}\r\n".format(task,len(resp.body)))
+            self.personal_log.write("It took {} seconds\r\n".format(time.time()-task_time))
             self.personal_log.write("{}\r\n".format("="*100))
             self.personal_log.flush()
             return resp

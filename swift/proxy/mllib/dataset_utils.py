@@ -48,6 +48,7 @@ def load_imagenet(imgs, labels, params, train=False, logFile=None):
     dataset = InMemoryDataset(imgs, labels=labels, transform=transform)
     batch_size = int(params['Batch-Size']) if 'Batch-Size' in params.keys() else 100
     assert batch_size > 0 and batch_size <= len(dataset)
+    logFile.write("Len of dataset {}, Batch size is: {}\r\n".format(len(dataset), batch_size))
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size)
     del imgs
     return dataloader

@@ -2162,10 +2162,10 @@ class Controller(object):
                 return
 
             gstart,gend = int(params['Start']), int(params['End'])
-            step = 1000
+            step = max(1000, int(params['Batch-Size']))
             params['Start'], params['End']=gstart, gstart+step if gstart+step < gend else gend
-            dataloader = self._read_imagenet(req, params, None)
             gstart_t = time.time()
+            dataloader = self._read_imagenet(req, params, None)
             out_q = Queue()
             for s in range(gstart+step, gend, step):
                 start_t = time.time()
