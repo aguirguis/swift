@@ -42,8 +42,8 @@ args = {'vgg11':[cfgs['A'],False],
 
 def build_my_vgg(model, num_classes=10):
     global args
-    args=args[model]
-    return MyVGG(make_layers(*args), num_classes=num_classes)
+    largs=args[model]
+    return MyVGG(make_layers(*largs), num_classes=num_classes)
 
 #model = build_my_vgg('vgg19',num_classes=1000)
 #a = torch.rand((2,3,224,224))

@@ -43,8 +43,8 @@ args = {'densenet121':[32, (6, 12, 24, 16), 64],
 
 def build_my_densenet(model, num_classes=10):
     global args
-    args=args[model]
-    return MyDenseNet(*args, num_classes=num_classes)
+    largs=args[model]
+    return MyDenseNet(*largs, num_classes=num_classes)
 
 #model = build_my_densenet('densenet201',1000)
 #a = torch.rand((2,3,224,224))
