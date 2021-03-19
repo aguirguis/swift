@@ -70,6 +70,7 @@ def get_model(model_str, dataset, device):
         models = {'convnet':Net,
 		'cifarnet':Cifarnet,
 		'cnn': CNNet,
+                'alexnet': torchvision.models.alexnet,
 		'resnet18':torchvision.models.resnet18,
                 'resnet34':torchvision.models.resnet34,
                 'resnet50':torchvision.models.resnet50,
