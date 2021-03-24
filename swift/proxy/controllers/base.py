@@ -2055,6 +2055,9 @@ class Controller(object):
             torch.cuda.empty_cache()
         dataset = params['Dataset']
         model = get_model(params['Model'], dataset, device)
+        if 'Split-Idx' in params.keys():				#We need to freeze the lower layers in this case!
+            split_idx = int(params['Split-Idx'])
+            freeze_lower_layers(model if device=='cpu' else model.module, split_idx)		#note that DataParallel wraps the model in module var
         model.train()
         criterion = get_loss(params['Lossfn'])
         opt_args={"lr":0.1,"momentum":0.9, "weight_decay":5e-4}
@@ -2076,24 +2079,23 @@ class Controller(object):
             tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
             #IMPORTANT: here we assume the POST method is called on the training file of MNIST
             #note that...only one dataloader exist for MNIST
-            dataloader = read_mnist(resp.body, tempresp.body, params, train=True, logFile=self.personal_log)
+            dataloader = read_mnist(resp.body, tempresp, params, train=True, logFile=self.personal_log)
         elif dataset == 'imagenet':
             #read labels from storage
             parent_dir = headers[0]['Parent-Dir']
             labels_file = "{}/ILSVRC2012_validation_ground_truth.txt".format(parent_dir)
             labels = None
-            resp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
-            labels = resp.body.decode("utf-8").split("\n")
+            tempresp = self._read_from_storage(req, labels_file, obj_ring, policy, version)
+            labels = tempresp.decode("utf-8").split("\n")
             #remove the last additional ''
             labels = [int(l)-1 for l in labels[:-1]]              #note that original labels are given from 1 to 1000
-            resp.body=b''
         for epoch in range(num_epochs):
             self.personal_log.write("Starting epoch: {}\r\n".format(epoch))
             if dataset == 'cifar10':
                 for obj_name in object_list:
                     #first, read the object from the storage layer
                     tempresp = self._read_from_storage(req, obj_name, obj_ring, policy, version)
-                    dataloader = read_cifar(tempresp.body, params, train=True, logFile=self.personal_log)
+                    dataloader = read_cifar(tempresp, params, train=True, logFile=self.personal_log)
                     self._do_training_iter(dataloader, model, optimizer, criterion, device)
                     del dataloader
                     gc.collect()
@@ -2120,6 +2122,7 @@ class Controller(object):
                 self._do_training_iter(dataloader, model, optimizer, criterion, device)	#the last batch
                 del dataloader
             scheduler.step()
+        model = model.to("cpu")
         model_state = model.module.state_dict() if device == 'cuda' else model.state_dict()
         resp.body = pickle.dumps(model_state)
         gc.collect()

@@ -5,6 +5,9 @@ import torchvision
 import torch.nn as nn
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
+from torchvision.models.densenet import _DenseLayer, _Transition
+#from torchvision.models.mnasnet import _InvertedResidual
+#from torchvision.models.mobilenet import ConvBNReLU, InvertedResidual
 from swift.proxy.mllib.models import *
 
 def get_optimizer(model, optimizer, *args, **kwargs):
@@ -20,7 +23,7 @@ def get_optimizer(model, optimizer, *args, **kwargs):
 		'rmsprop': optim.RMSprop,
 		'adagrad': optim.Adagrad}
     if optimizer in optimizers.keys():
-        return optimizers[optimizer](model.parameters(),  *args, **kwargs)
+        return optimizers[optimizer](filter(lambda p: p.requires_grad, model.parameters()),  *args, **kwargs)
     else:
         print("The selected optimizer is undefined, the available optimizers are: ", optimizers.keys())
         raise
@@ -106,3 +109,24 @@ def get_mem_usage():
     return {"available":all_mem[1],	"used":all_mem[3],
 	"free":all_mem[4], "active":all_mem[5],
 	"buffers":all_mem[7],"cached":all_mem[8]}
+
+types = [torch.nn.modules.container.Sequential, _DenseLayer, _Transition] #, _InvertedResidual, ConvBNReLU, InvertedResidual]
+
+globalFreezeIndex = 0
+def freeze_sequential(network, all_layers):
+    global globalFreezeIndex, types
+    for layer in network.children():
+        if type(layer) in types:
+            freeze_sequential(layer, all_layers)
+        else:
+            all_layers.append(layer)
+            if globalFreezeIndex >= len(all_layers):
+                for param in layer.parameters():
+                    param.requires_grad = False
+
+def freeze_lower_layers(net, split_idx):
+    #freeze the lower layers whose index < split_idx
+    global globalFreezeIndex
+    globalFreezeIndex = split_idx
+    all_layers = []
+    freeze_sequential(net, all_layers)
