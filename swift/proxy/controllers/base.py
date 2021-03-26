@@ -2036,7 +2036,11 @@ class Controller(object):
                     res.extend(predicted[1])
                     del outputs, predicted
                 self.personal_log.write("after getting outputs, used memory: {} res size {}\r\n".format(get_mem_usage()['used'], len(res)))
+#                self.personal_log.write("GPU memory: {}		\
+#			\r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
                 self.personal_log.flush()
+#                torch.cuda.reset_max_memory_allocated(0)
+#                torch.cuda.reset_max_memory_allocated(1)
             del batch
             gc.collect()
 
@@ -2126,6 +2130,12 @@ class Controller(object):
         model_state = model.module.state_dict() if device == 'cuda' else model.state_dict()
         resp.body = pickle.dumps(model_state)
         gc.collect()
+        if device == 'cuda':
+            self.personal_log.write("GPU memory: {}         \
+                 \r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
+            torch.cuda.reset_max_memory_allocated(0)
+            torch.cuda.reset_max_memory_allocated(1)
+#            torch.cuda.empty_cache()
         return resp
 
     def _do_inference(self, req, resp, headers, params):
@@ -2177,7 +2187,7 @@ class Controller(object):
                 myt.start()
 #                self.personal_log.write("Time before do inference: {} CPU count {}\r\n".format(time.time()-start_t,multiprocessing.cpu_count()))
                 self._do_inference_iter(dataloader, model, res, device, split_idx)
-#                self.personal_log.write("Time after do inference: {} Q size: {}\r\n".format(time.time()-start_t, out_q.qsize()))
+                self.personal_log.write("Time after do inference: {}\r\n".format(time.time()-start_t))
 #                self.personal_log.flush()
                 myt.join()
                 next_dataloader = out_q.get()
@@ -2206,6 +2216,12 @@ class Controller(object):
         gc.collect()
         self.personal_log.write("Final emory usage before exiting: {}\r\n".format(get_mem_usage()))
         self.personal_log.flush()
+        if device == 'cuda':
+            self.personal_log.write("GPU memory: {}         \
+                  \r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
+            torch.cuda.reset_max_memory_allocated(0)
+            torch.cuda.reset_max_memory_allocated(1)
+#            torch.cuda.empty_cache()
         return resp
 
     def make_requests(self, req, ring, part, method, path, headers,
