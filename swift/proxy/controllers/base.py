@@ -1978,6 +1978,7 @@ class Controller(object):
         idtostr = lambda idx: "{}/ILSVRC2012_val_000".format(parent_dir)+((5-len(str(idx+1)))*"0")+str(idx+1)+".JPEG"
         objects = [idtostr(idx) for idx in range(start,end)]
         out_q = Queue()
+        read_time = time.time()
         threads = [Thread(target=self._read_from_storage, args=(req, obj_name, obj_ring, policy, version,out_q)) for obj_name in objects]
 #        self.personal_log.write("Done creating threads loop\r\n")
 #        self.personal_log.flush()
@@ -1986,6 +1987,7 @@ class Controller(object):
         for th in threads:
             th.join()
 #        images = [self._read_from_storage(req, obj_name, obj_ring, policy, version) for obj_name in objects]
+        self.personal_log.write("Time to read a batch of images from storage: {}\r\n".format(time.time()-read_time))
         images = list(out_q.queue)
         self.personal_log.write("Going to work with {} images[{}:{}] \r\n".format(len(images),start,end))
         self.personal_log.flush()
@@ -2023,12 +2025,21 @@ class Controller(object):
         :param device: CPU or GPU
         :param split_idx: the index at which the output is required; this is only valid with the custom models (which start with "my")
         """
+        inf_time = time.time()
         with torch.no_grad():
+            self.personal_log.write("NO-OP time: {} \r\n".format(time.time()-inf_time))
             for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
+                copy_time = time.time()
+                self.personal_log.write("Difference between copy and inf times: {}\r\n".format(copy_time-inf_time))
                 batch = batch.to(device)
+                self.personal_log.write("Time to copy batch to GPU memmory: {}\r\n".format(time.time()-copy_time))
                 if split_idx is not None:
+                    forward_time = time.time()
                     outputs = model(batch,0,split_idx)		#currently we assume we always start from the beginning
+                    self.personal_log.write("Time for forward pass: {}\r\n".format(time.time()-forward_time))
+                    ser_time = time.time()
                     res.extend(outputs.cpu().detach().numpy())	#will do batching on the other side
+                    self.personal_log.write("Time to serialize data to bytes: {}\r\n".format(time.time()-ser_time))
                     del outputs
                 else:
                     outputs = model(batch)
@@ -2041,6 +2052,8 @@ class Controller(object):
                 self.personal_log.flush()
 #                torch.cuda.reset_max_memory_allocated(0)
 #                torch.cuda.reset_max_memory_allocated(1)
+                self.personal_log.write("one inference iteration: {}\r\n".format(time.time()-copy_time))
+            self.personal_log.write("Inference time as read in the function: {}\r\n".format(time.time()-copy_time))
             del batch
             gc.collect()
 
@@ -2057,6 +2070,8 @@ class Controller(object):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if device == 'cuda':
             torch.cuda.empty_cache()
+            torch.cuda.reset_max_memory_allocated("cuda:0")
+            torch.cuda.reset_max_memory_allocated("cuda:1")
         dataset = params['Dataset']
         model = get_model(params['Model'], dataset, device)
         if 'Split-Idx' in params.keys():				#We need to freeze the lower layers in this case!
@@ -2133,9 +2148,6 @@ class Controller(object):
         if device == 'cuda':
             self.personal_log.write("GPU memory: {}         \
                  \r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
-            torch.cuda.reset_max_memory_allocated(0)
-            torch.cuda.reset_max_memory_allocated(1)
-#            torch.cuda.empty_cache()
         return resp
 
     def _do_inference(self, req, resp, headers, params):
@@ -2151,6 +2163,10 @@ class Controller(object):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if device == 'cuda':
             torch.cuda.empty_cache()
+#            torch.cuda.reset_max_memory_allocated(0)
+#            torch.cuda.reset_max_memory_allocated(1)
+        self.personal_log.write("Reset memory usage for benchmarking! Device: {}\r\n".format(device))
+        self.personal_log.flush()
         dataset = params['Dataset']
         #init the model
         model = get_model(params['Model'], dataset, device)
@@ -2175,17 +2191,16 @@ class Controller(object):
                 return
 
             gstart,gend = int(params['Start']), int(params['End'])
-            step = max(1000, int(params['Batch-Size']))
+            step = int(params['Batch-Size'])  #max(1000, int(params['Batch-Size']))
             params['Start'], params['End']=gstart, gstart+step if gstart+step < gend else gend
             gstart_t = time.time()
             dataloader = self._read_imagenet(req, params, None)
             out_q = Queue()
             for s in range(gstart+step, gend, step):
-                start_t = time.time()
                 params['Start'],params['End'] = s,s+step if s+step < gend else gend
                 myt = Thread(target=start_now, args=(req, params, headers,out_q,))
                 myt.start()
-#                self.personal_log.write("Time before do inference: {} CPU count {}\r\n".format(time.time()-start_t,multiprocessing.cpu_count()))
+                start_t = time.time()
                 self._do_inference_iter(dataloader, model, res, device, split_idx)
                 self.personal_log.write("Time after do inference: {}\r\n".format(time.time()-start_t))
 #                self.personal_log.flush()
@@ -2219,9 +2234,6 @@ class Controller(object):
         if device == 'cuda':
             self.personal_log.write("GPU memory: {}         \
                   \r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
-            torch.cuda.reset_max_memory_allocated(0)
-            torch.cuda.reset_max_memory_allocated(1)
-#            torch.cuda.empty_cache()
         return resp
 
     def make_requests(self, req, ring, part, method, path, headers,
