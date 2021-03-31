@@ -29,7 +29,8 @@ class MyResNet(resnet):
           x = m(x)
 #          print("Index {}, layer {}, tensor size {} KBs".format(idx, type(m), x.element_size() * x.nelement()/1024))
           if idx >= end:
-              return x
+              break
+#      logFile.write("=========Time at the end of forward is: {}\r\n".format(time.time()-start_time))
       return x
 
 args = {'resnet18':[BasicBlock, [2, 2, 2, 2]],

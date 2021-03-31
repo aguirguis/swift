@@ -32,7 +32,7 @@ class MyDenseNet(DenseNet):
           x = m(x)
 #          print("Index {}, layer {}, tensor size {} KBs".format(idx, type(m), x.element_size() * x.nelement()/1024))
           if idx >= end:
-              return x
+              break
       return x
 
 args = {'densenet121':[32, (6, 12, 24, 16), 64],

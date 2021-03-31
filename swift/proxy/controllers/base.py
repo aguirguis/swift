@@ -2027,10 +2027,9 @@ class Controller(object):
         """
         inf_time = time.time()
         with torch.no_grad():
-            self.personal_log.write("NO-OP time: {} \r\n".format(time.time()-inf_time))
             for idx,batch in enumerate(dataloader):                 #note that labels are not included in testloader
                 copy_time = time.time()
-                self.personal_log.write("Difference between copy and inf times: {}\r\n".format(copy_time-inf_time))
+                self.personal_log.write("next(dataloader) time: {}\r\n".format(copy_time-inf_time))
                 batch = batch.to(device)
                 self.personal_log.write("Time to copy batch to GPU memmory: {}\r\n".format(time.time()-copy_time))
                 if split_idx is not None:
@@ -2052,8 +2051,6 @@ class Controller(object):
                 self.personal_log.flush()
 #                torch.cuda.reset_max_memory_allocated(0)
 #                torch.cuda.reset_max_memory_allocated(1)
-                self.personal_log.write("one inference iteration: {}\r\n".format(time.time()-copy_time))
-            self.personal_log.write("Inference time as read in the function: {}\r\n".format(time.time()-copy_time))
             del batch
             gc.collect()
 
@@ -2191,22 +2188,21 @@ class Controller(object):
                 return
 
             gstart,gend = int(params['Start']), int(params['End'])
-            step = int(params['Batch-Size'])  #max(1000, int(params['Batch-Size']))
+            step = int(params['Batch-Size'])
             params['Start'], params['End']=gstart, gstart+step if gstart+step < gend else gend
             gstart_t = time.time()
             dataloader = self._read_imagenet(req, params, None)
             out_q = Queue()
             for s in range(gstart+step, gend, step):
                 params['Start'],params['End'] = s,s+step if s+step < gend else gend
-                myt = Thread(target=start_now, args=(req, params, headers,out_q,))
-                myt.start()
+#                myt = Thread(target=start_now, args=(req, params, headers,out_q,))
+#                myt.start()
                 start_t = time.time()
                 self._do_inference_iter(dataloader, model, res, device, split_idx)
                 self.personal_log.write("Time after do inference: {}\r\n".format(time.time()-start_t))
-#                self.personal_log.flush()
-                myt.join()
-                next_dataloader = out_q.get()
-#                next_dataloader = self._read_imagenet(req, params, None)
+#                myt.join()
+#                next_dataloader = out_q.get()
+                next_dataloader = self._read_imagenet(req, params, None)
                 assert next_dataloader is not None
                 dataloader = next_dataloader
                 next_dataloader = None
