@@ -2230,6 +2230,8 @@ class Controller(object):
         if device == 'cuda':
             self.personal_log.write("GPU memory: {}         \
                   \r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
+            torch.cuda.reset_max_memory_allocated(0)
+            torch.cuda.reset_max_memory_allocated(1)
         return resp
 
     def make_requests(self, req, ring, part, method, path, headers,
