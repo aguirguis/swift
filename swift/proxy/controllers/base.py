@@ -2067,8 +2067,6 @@ class Controller(object):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if device == 'cuda':
             torch.cuda.empty_cache()
-            torch.cuda.reset_max_memory_allocated("cuda:0")
-            torch.cuda.reset_max_memory_allocated("cuda:1")
         dataset = params['Dataset']
         model = get_model(params['Model'], dataset, device)
         if 'Split-Idx' in params.keys():				#We need to freeze the lower layers in this case!
@@ -2145,6 +2143,8 @@ class Controller(object):
         if device == 'cuda':
             self.personal_log.write("GPU memory: {}         \
                  \r\n".format((torch.cuda.max_memory_allocated(0)+torch.cuda.max_memory_allocated(1))/(1024*1024*1024)))
+            torch.cuda.reset_max_memory_allocated(0)
+            torch.cuda.reset_max_memory_allocated(1)
         return resp
 
     def _do_inference(self, req, resp, headers, params):
@@ -2160,10 +2160,6 @@ class Controller(object):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         if device == 'cuda':
             torch.cuda.empty_cache()
-#            torch.cuda.reset_max_memory_allocated(0)
-#            torch.cuda.reset_max_memory_allocated(1)
-        self.personal_log.write("Reset memory usage for benchmarking! Device: {}\r\n".format(device))
-        self.personal_log.flush()
         dataset = params['Dataset']
         #init the model
         model = get_model(params['Model'], dataset, device)
